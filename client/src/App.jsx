@@ -168,9 +168,17 @@ export default function App() {
   const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_PRESETS[0]);
   const [aboutInput, setAboutInput] = useState('Hey there! I am using ChatBox.');
   const [otpInput, setOtpInput] = useState('');
-  const [otpNotification, setOtpNotification] = useState(null); // { channel, target, otpCode, emailSentLive }
+  const [otpNotification, setOtpNotification] = useState(null);
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Real Email (Gmail SMTP) & SMS (Fast2SMS / Twilio) Gateway Modal State
+  const [showGatewayModal, setShowGatewayModal] = useState(false);
+  const [gatewayStatus, setGatewayStatus] = useState({ emailConfigured: false, smsConfigured: false });
+  const [emailUserDraft, setEmailUserDraft] = useState('');
+  const [emailPassDraft, setEmailPassDraft] = useState('');
+  const [fast2smsKeyDraft, setFast2smsKeyDraft] = useState('');
+  const [gatewaySaveMsg, setGatewaySaveMsg] = useState('');
 
   // Chat State
   const [users, setUsers] = useState([]);
@@ -334,12 +342,20 @@ export default function App() {
     setCallState(null);
   };
 
-  // Fetch initial users list
+  // Fetch initial users list & gateway status
   useEffect(() => {
     fetch('/api/users')
       .then((r) => r.json())
       .then((data) => {
         if (data.users) setUsers(data.users);
+      })
+      .catch(() => {});
+
+    fetch('/api/auth/gateway-status')
+      .then((r) => r.json())
+      .then((status) => {
+        setGatewayStatus(status);
+        if (status.emailUser) setEmailUserDraft(status.emailUser);
       })
       .catch(() => {});
   }, []);
@@ -882,19 +898,56 @@ export default function App() {
         channel: data.channel,
         target: data.target,
         otpCode: data.otpCode,
-        emailSentLive: data.emailSentLive
+        deliveredLive: data.deliveredLive,
+        provider: data.provider,
+        previewUrl: data.previewUrl,
+        gatewayError: data.gatewayError
       });
 
       playNotificationChime();
       triggerDesktopNotification(
         `ChatBox ${data.channel === 'email' ? 'Email' : 'SMS'} OTP`,
-        `Your verification code for ${data.target} is ${data.otpCode}`,
+        data.deliveredLive
+          ? `Verification code sent to ${data.target} via ${data.provider}`
+          : `Your verification code for ${data.target} is ${data.otpCode}`,
         selectedAvatar
       );
     } catch {
       setLoginError('Failed to connect to server. Is the backend running?');
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleSaveGatewayConfig = async (e) => {
+    e.preventDefault();
+    setGatewaySaveMsg('Saving...');
+    try {
+      const res = await fetch('/api/auth/gateway-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emailUser: emailUserDraft,
+          emailPass: emailPassDraft,
+          fast2smsKey: fast2smsKeyDraft
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setGatewayStatus({
+          emailConfigured: data.emailConfigured,
+          smsConfigured: data.smsConfigured
+        });
+        setEmailPassDraft('');
+        setFast2smsKeyDraft('');
+        setGatewaySaveMsg('Saved! Real OTP delivery is now active.');
+        setTimeout(() => {
+          setGatewaySaveMsg('');
+          setShowGatewayModal(false);
+        }, 1200);
+      }
+    } catch {
+      setGatewaySaveMsg('Failed to save gateway settings.');
     }
   };
 
@@ -1218,24 +1271,137 @@ export default function App() {
             <div className="live-otp-body">
               <div className="live-otp-header">
                 <strong>
-                  {otpNotification.channel === 'email'
+                  {otpNotification.deliveredLive
+                    ? `Real ${otpNotification.provider} Dispatched`
+                    : otpNotification.channel === 'email'
                     ? 'Email Verification OTP'
                     : 'SMS Verification OTP'}
                 </strong>
                 <span>to {otpNotification.target}</span>
               </div>
-              <p>
-                Your 6-digit ChatBox verification code is{' '}
-                <span className="otp-code-highlight">{otpNotification.otpCode}</span>
-              </p>
+              {otpNotification.deliveredLive ? (
+                <p>
+                  ✅ A dynamic 6-digit OTP has been sent directly to{' '}
+                  <strong>{otpNotification.target}</strong>! Please check your{' '}
+                  {otpNotification.channel === 'email' ? 'email inbox' : 'mobile messages'}.
+                </p>
+              ) : (
+                <p>
+                  Dynamic 6-digit OTP for <strong>{otpNotification.target}</strong>:{' '}
+                  <span className="otp-code-highlight">{otpNotification.otpCode}</span>
+                </p>
+              )}
             </div>
-            <button
-              type="button"
-              className="autofill-otp-btn"
-              onClick={() => setOtpInput(otpNotification.otpCode)}
-            >
-              Auto-Fill OTP
-            </button>
+            <div className="live-otp-actions">
+              {otpNotification.previewUrl && (
+                <a
+                  href={otpNotification.previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="autofill-otp-btn webmail-link"
+                >
+                  📬 Open Email
+                </a>
+              )}
+              {otpNotification.otpCode && (
+                <button
+                  type="button"
+                  className="autofill-otp-btn"
+                  onClick={() => setOtpInput(otpNotification.otpCode)}
+                >
+                  Auto-Fill OTP
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Gateway Configuration Modal (Gmail App Password & Fast2SMS API Key) */}
+        {showGatewayModal && (
+          <div className="modal-backdrop" onClick={() => setShowGatewayModal(false)}>
+            <div className="delete-modal-card gateway-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="gateway-modal-header">
+                <h3>⚙️ Configure Real Email & SMS OTP</h3>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setShowGatewayModal(false)}
+                >
+                  <CloseIcon size={18} />
+                </button>
+              </div>
+              <p className="gateway-modal-desc">
+                Enter your Gmail App Password or Fast2SMS key below to send real OTPs directly to any mobile phone or email inbox.
+              </p>
+
+              <form onSubmit={handleSaveGatewayConfig} className="login-form">
+                <div className="form-group">
+                  <label>Sender Gmail Address (for Real Email OTPs)</label>
+                  <input
+                    type="email"
+                    placeholder="yourname@gmail.com"
+                    value={emailUserDraft}
+                    onChange={(e) => setEmailUserDraft(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>
+                    Gmail 16-Digit App Password (
+                    <a
+                      href="https://myaccount.google.com/apppasswords"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#38bdf8' }}
+                    >
+                      Get App Password ↗
+                    </a>
+                    )
+                  </label>
+                  <input
+                    type="password"
+                    placeholder={
+                      gatewayStatus.emailConfigured
+                        ? '•••••••••••••••• (Already saved — enter new to update)'
+                        : 'xxxx xxxx xxxx xxxx'
+                    }
+                    value={emailPassDraft}
+                    onChange={(e) => setEmailPassDraft(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>
+                    Fast2SMS API Key (for Real Indian +91 Mobile SMS —{' '}
+                    <a
+                      href="https://www.fast2sms.com/"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#38bdf8' }}
+                    >
+                      fast2sms.com ↗
+                    </a>
+                    )
+                  </label>
+                  <input
+                    type="password"
+                    placeholder={
+                      gatewayStatus.smsConfigured
+                        ? '•••••••••••••••• (Already saved — enter new to update)'
+                        : 'Paste Fast2SMS API Authorization Key'
+                    }
+                    value={fast2smsKeyDraft}
+                    onChange={(e) => setFast2smsKeyDraft(e.target.value)}
+                  />
+                </div>
+
+                {gatewaySaveMsg && <div className="gateway-save-msg">{gatewaySaveMsg}</div>}
+
+                <button type="submit" className="login-submit-btn">
+                  Save Real OTP Gateway Settings ✓
+                </button>
+              </form>
+            </div>
           </div>
         )}
 
@@ -1244,16 +1410,37 @@ export default function App() {
             <ChatBubbleLogo size={46} />
             <div>
               <h1>ChatBox Web</h1>
-              <p>Verified Mobile / Email OTP Sign-In</p>
+              <p>Dynamic Mobile / Email OTP Sign-In</p>
             </div>
-            <button
-              type="button"
-              className="icon-btn login-theme-toggle"
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              title="Toggle theme"
-            >
-              {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-            </button>
+            <div className="login-theme-toggle" style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setShowGatewayModal(true)}
+                title="Configure Real Email / SMS OTP Gateway"
+              >
+                ⚙️
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                title="Toggle theme"
+              >
+                {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+              </button>
+            </div>
+          </div>
+
+          <div className="gateway-status-strip" onClick={() => setShowGatewayModal(true)}>
+            <span>
+              {gatewayStatus.emailConfigured ? '🟢 Real Gmail SMTP Active' : '📧 Email OTP Ready'}
+            </span>
+            <span>•</span>
+            <span>
+              {gatewayStatus.smsConfigured ? '🟢 Real SMS Gateway Active' : '📱 Mobile OTP Ready'}
+            </span>
+            <span className="gateway-config-link">⚙️ Configure</span>
           </div>
 
           {loginStep === 'credentials' ? (
@@ -1314,19 +1501,28 @@ export default function App() {
               {loginError && <div className="login-error">{loginError}</div>}
 
               <button type="submit" className="login-submit-btn" disabled={isLoggingIn}>
-                {isLoggingIn ? 'Sending OTP...' : 'Send OTP Verification Code →'}
+                {isLoggingIn ? 'Sending Dynamic OTP...' : 'Send Dynamic OTP Code →'}
               </button>
             </form>
           ) : (
             <form onSubmit={handleVerifyOtp} className="login-form">
               <div className="otp-step-info">
                 <span className="otp-badge">
-                  {otpNotification?.channel === 'email' ? '📧 Email OTP Sent' : '📱 Mobile OTP Sent'}
+                  {otpNotification?.deliveredLive
+                    ? `✅ Sent via ${otpNotification.provider}`
+                    : otpNotification?.channel === 'email'
+                    ? '📧 Dynamic Email OTP Sent'
+                    : '📱 Dynamic Mobile OTP Sent'}
                 </span>
                 <p>
-                  We sent a 6-digit verification code to{' '}
+                  We sent a dynamic 6-digit verification code to{' '}
                   <strong>{otpNotification?.target || identifierInput}</strong>
                 </p>
+                {otpNotification?.gatewayError && (
+                  <p style={{ color: '#f87171', fontSize: '0.78rem' }}>
+                    Gateway note: {otpNotification.gatewayError} (Fallback active above)
+                  </p>
+                )}
               </div>
 
               <div className="form-group">
@@ -1365,7 +1561,7 @@ export default function App() {
                   className="text-link-btn"
                   onClick={(e) => handleRequestOtp(e)}
                 >
-                  Resend OTP
+                  Resend New OTP
                 </button>
               </div>
             </form>

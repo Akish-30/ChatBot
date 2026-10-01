@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -28,6 +29,7 @@ const io = new Server(server, {
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
+const GATEWAY_PATH = path.join(DATA_DIR, 'gateway.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -37,6 +39,176 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// Load or save dynamic Email / SMS Gateway settings
+function loadGatewayConfig() {
+  let saved = {};
+  try {
+    if (fs.existsSync(GATEWAY_PATH)) {
+      saved = JSON.parse(fs.readFileSync(GATEWAY_PATH, 'utf-8'));
+    }
+  } catch {
+    saved = {};
+  }
+  return {
+    emailUser: saved.emailUser || process.env.EMAIL_USER || '',
+    emailPass: saved.emailPass || process.env.EMAIL_PASS || '',
+    emailService: saved.emailService || process.env.EMAIL_SERVICE || 'gmail',
+    fast2smsKey: saved.fast2smsKey || process.env.FAST2SMS_API_KEY || '',
+    twilioSid: saved.twilioSid || process.env.TWILIO_ACCOUNT_SID || '',
+    twilioToken: saved.twilioToken || process.env.TWILIO_AUTH_TOKEN || '',
+    twilioPhone: saved.twilioPhone || process.env.TWILIO_PHONE_NUMBER || ''
+  };
+}
+
+let gatewayConfig = loadGatewayConfig();
+let etherealAccount = null;
+
+async function getEtherealTransporter() {
+  try {
+    if (!etherealAccount) {
+      etherealAccount = await nodemailer.createTestAccount();
+    }
+    return nodemailer.createTransport({
+      host: etherealAccount.smtp.host,
+      port: etherealAccount.smtp.port,
+      secure: etherealAccount.smtp.secure,
+      auth: {
+        user: etherealAccount.user,
+        pass: etherealAccount.pass
+      }
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function sendRealEmailOtp(targetEmail, otp) {
+  const htmlBody = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 28px; border-radius: 18px; background: #0f172a; color: #f8fafc; border: 1px solid #334155;">
+      <h2 style="color: #818cf8; margin-top: 0;">ChatBox Web Verification</h2>
+      <p style="color: #cbd5e1; font-size: 15px;">Hello! Use the dynamic 6-digit verification code below to sign in to your ChatBox account:</p>
+      <div style="font-size: 34px; font-weight: 800; letter-spacing: 8px; padding: 18px; background: #1e293b; border: 1px solid #38bdf8; border-radius: 14px; text-align: center; color: #38bdf8; margin: 22px 0;">
+        ${otp}
+      </div>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 0;">This OTP code is valid for 5 minutes. Do not share it with anyone.</p>
+    </div>
+  `;
+
+  // 1. Try real Gmail / Custom SMTP if configured
+  if (gatewayConfig.emailUser && gatewayConfig.emailPass) {
+    try {
+      const transporter = nodemailer.createTransport({
+        service: gatewayConfig.emailService || 'gmail',
+        auth: {
+          user: gatewayConfig.emailUser.trim(),
+          pass: gatewayConfig.emailPass.replace(/\s+/g, '')
+        }
+      });
+      await transporter.sendMail({
+        from: `"ChatBox Security" <${gatewayConfig.emailUser.trim()}>`,
+        to: targetEmail,
+        subject: `${otp} is your ChatBox Verification Code`,
+        html: htmlBody
+      });
+      return { deliveredLive: true, provider: 'Gmail SMTP', previewUrl: null };
+    } catch (err) {
+      console.error('Real SMTP send error:', err.message);
+      return { deliveredLive: false, error: err.message, previewUrl: null };
+    }
+  }
+
+  // 2. Otherwise send to a real Nodemailer Ethereal Webmail Inbox so user can open the actual email in browser
+  try {
+    const ethTransporter = await getEtherealTransporter();
+    if (ethTransporter) {
+      const info = await ethTransporter.sendMail({
+        from: '"ChatBox Security" <no-reply@chatbox.app>',
+        to: targetEmail,
+        subject: `${otp} is your ChatBox Verification Code`,
+        html: htmlBody
+      });
+      const previewUrl = nodemailer.getTestMessageUrl(info);
+      return { deliveredLive: false, provider: 'Ethereal Webmail', previewUrl };
+    }
+  } catch (err) {
+    console.warn('Ethereal mail fallback error:', err.message);
+  }
+
+  return { deliveredLive: false, provider: 'In-App Banner', previewUrl: null };
+}
+
+async function sendRealSmsOtp(targetPhone, otp) {
+  const cleanDigits = targetPhone.replace(/[^0-9]/g, '');
+
+  // 1. Try Fast2SMS (for Indian mobile numbers: 10 digits or 91 + 10 digits)
+  if (gatewayConfig.fast2smsKey) {
+    try {
+      const tenDigit = cleanDigits.length === 12 && cleanDigits.startsWith('91')
+        ? cleanDigits.slice(2)
+        : cleanDigits.slice(-10);
+
+      const resp = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+        method: 'POST',
+        headers: {
+          authorization: gatewayConfig.fast2smsKey.trim(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          route: 'q',
+          message: `Your ChatBox verification OTP is ${otp}. Valid for 5 minutes.`,
+          language: 'english',
+          flash: 0,
+          numbers: tenDigit
+        })
+      });
+      const data = await resp.json();
+      if (data.return === true) {
+        return { deliveredLive: true, provider: 'Fast2SMS' };
+      }
+      console.warn('Fast2SMS error:', data.message);
+      return { deliveredLive: false, error: Array.isArray(data.message) ? data.message.join(', ') : data.message };
+    } catch (err) {
+      console.error('Fast2SMS request failed:', err.message);
+    }
+  }
+
+  // 2. Try Twilio SMS (Global mobile numbers)
+  if (gatewayConfig.twilioSid && gatewayConfig.twilioToken && gatewayConfig.twilioPhone) {
+    try {
+      const formattedTo = targetPhone.startsWith('+') ? targetPhone : `+${cleanDigits}`;
+      const auth = Buffer.from(
+        `${gatewayConfig.twilioSid.trim()}:${gatewayConfig.twilioToken.trim()}`
+      ).toString('base64');
+
+      const params = new URLSearchParams();
+      params.append('To', formattedTo);
+      params.append('From', gatewayConfig.twilioPhone.trim());
+      params.append('Body', `Your ChatBox verification code is: ${otp}`);
+
+      const resp = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${gatewayConfig.twilioSid.trim()}/Messages.json`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: params.toString()
+        }
+      );
+      const data = await resp.json();
+      if (resp.ok && data.sid) {
+        return { deliveredLive: true, provider: 'Twilio SMS' };
+      }
+      return { deliveredLive: false, error: data.message || 'Twilio SMS failed' };
+    } catch (err) {
+      console.error('Twilio request failed:', err.message);
+    }
+  }
+
+  return { deliveredLive: false, provider: 'In-App SMS Simulator' };
+}
 
 const DEFAULT_USERS = [
   {
@@ -103,18 +275,6 @@ const db = loadDb();
 // In-memory OTP store: normalizedIdentifier -> { otp, expiresAt }
 const otpStore = new Map();
 
-// Optional real SMTP transporter if EMAIL_USER & EMAIL_PASS are set in environment
-const mailTransporter =
-  process.env.EMAIL_USER && process.env.EMAIL_PASS
-    ? nodemailer.createTransport({
-        service: process.env.EMAIL_SERVICE || 'gmail',
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS
-        }
-      })
-    : null;
-
 function normalizeIdentifier(raw) {
   if (!raw) return { valid: false };
   const trimmed = String(raw).trim();
@@ -127,7 +287,6 @@ function normalizeIdentifier(raw) {
       display: trimmed.toLowerCase()
     };
   }
-  // Phone validation: allow +, spaces, dashes, 8 to 15 digits
   const digitsOnly = trimmed.replace(/[\s\-()]/g, '');
   const phoneRegex = /^\+?[0-9]{8,15}$/;
   if (phoneRegex.test(digitsOnly)) {
@@ -141,7 +300,6 @@ function normalizeIdentifier(raw) {
   return { valid: false };
 }
 
-// Map of userId -> Set of socketIds
 const onlineUserSockets = new Map();
 
 function isUserOnline(userId) {
@@ -199,17 +357,70 @@ function getConversationSummaries(userId) {
 }
 
 // ---------------------------------------------------------------------------
-// AUTH & OTP ENDPOINTS
+// GATEWAY CONFIGURATION & OTP ENDPOINTS
 // ---------------------------------------------------------------------------
+app.get('/api/auth/gateway-status', (req, res) => {
+  res.json({
+    emailConfigured: Boolean(gatewayConfig.emailUser && gatewayConfig.emailPass),
+    emailUser: gatewayConfig.emailUser || '',
+    smsConfigured: Boolean(
+      gatewayConfig.fast2smsKey ||
+        (gatewayConfig.twilioSid && gatewayConfig.twilioToken && gatewayConfig.twilioPhone)
+    ),
+    smsProvider: gatewayConfig.fast2smsKey
+      ? 'fast2sms'
+      : gatewayConfig.twilioSid
+      ? 'twilio'
+      : 'none'
+  });
+});
+
+app.post('/api/auth/gateway-config', (req, res) => {
+  const {
+    emailUser,
+    emailPass,
+    fast2smsKey,
+    twilioSid,
+    twilioToken,
+    twilioPhone
+  } = req.body;
+
+  gatewayConfig = {
+    ...gatewayConfig,
+    emailUser: typeof emailUser === 'string' ? emailUser.trim() : gatewayConfig.emailUser,
+    emailPass: typeof emailPass === 'string' && emailPass.trim() ? emailPass.trim() : gatewayConfig.emailPass,
+    fast2smsKey: typeof fast2smsKey === 'string' ? fast2smsKey.trim() : gatewayConfig.fast2smsKey,
+    twilioSid: typeof twilioSid === 'string' ? twilioSid.trim() : gatewayConfig.twilioSid,
+    twilioToken: typeof twilioToken === 'string' && twilioToken.trim() ? twilioToken.trim() : gatewayConfig.twilioToken,
+    twilioPhone: typeof twilioPhone === 'string' ? twilioPhone.trim() : gatewayConfig.twilioPhone
+  };
+
+  try {
+    fs.writeFileSync(GATEWAY_PATH, JSON.stringify(gatewayConfig, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save gateway config:', err);
+  }
+
+  return res.json({
+    success: true,
+    emailConfigured: Boolean(gatewayConfig.emailUser && gatewayConfig.emailPass),
+    smsConfigured: Boolean(
+      gatewayConfig.fast2smsKey ||
+        (gatewayConfig.twilioSid && gatewayConfig.twilioToken && gatewayConfig.twilioPhone)
+    )
+  });
+});
+
 app.post('/api/auth/send-otp', async (req, res) => {
   const { identifier } = req.body;
   const parsed = normalizeIdentifier(identifier);
   if (!parsed.valid) {
     return res.status(400).json({
-      error: 'Please enter a valid Mobile Number (e.g. +91 9876543210) or Email Address (e.g. name@example.com).'
+      error: 'Please enter a valid Mobile Number (e.g. +91 9876543210) or Email Address (e.g. name@gmail.com).'
     });
   }
 
+  // Generate fresh dynamic 6-digit OTP
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   otpStore.set(parsed.normalized, {
     otp,
@@ -222,39 +433,27 @@ app.post('/api/auth/send-otp', async (req, res) => {
       normalizeIdentifier(u.identifier).normalized === parsed.normalized
   );
 
-  let emailSentLive = false;
-  if (parsed.type === 'email' && mailTransporter) {
-    try {
-      await mailTransporter.sendMail({
-        from: `"ChatBox Security" <${process.env.EMAIL_USER}>`,
-        to: parsed.display,
-        subject: `Your ChatBox Verification Code: ${otp}`,
-        html: `
-          <div style="font-family: sans-serif; max-width: 460px; margin: 0 auto; padding: 24px; border-radius: 16px; background: #0f172a; color: #f8fafc;">
-            <h2 style="color: #818cf8; margin-top: 0;">ChatBox Web Verification</h2>
-            <p>Use the 6-digit OTP code below to sign in to your ChatBox account:</p>
-            <div style="font-size: 32px; font-weight: 800; letter-spacing: 6px; padding: 16px; background: #1e293b; border-radius: 12px; text-align: center; color: #38bdf8; margin: 20px 0;">
-              ${otp}
-            </div>
-            <p style="font-size: 13px; color: #94a3b8;">This code expires in 5 minutes.</p>
-          </div>
-        `
-      });
-      emailSentLive = true;
-    } catch (err) {
-      console.warn('SMTP email send failed, falling back to live notification OTP:', err.message);
-    }
+  let deliveryResult = { deliveredLive: false, provider: '', previewUrl: null, error: null };
+  if (parsed.type === 'email') {
+    deliveryResult = await sendRealEmailOtp(parsed.display, otp);
+  } else {
+    deliveryResult = await sendRealSmsOtp(parsed.display, otp);
   }
 
-  console.log(`[ChatBox OTP] Sent to ${parsed.display} (${parsed.type}): ${otp}`);
+  console.log(
+    `[ChatBox Dynamic OTP] Target: ${parsed.display} (${parsed.type}) | OTP: ${otp} | LiveDelivered: ${deliveryResult.deliveredLive} (${deliveryResult.provider})`
+  );
 
   return res.json({
     success: true,
     channel: parsed.type,
     target: parsed.display,
-    emailSentLive,
-    // Included so the live on-screen SMS/Email notification popup can display the real OTP immediately
-    otpCode: otp,
+    deliveredLive: deliveryResult.deliveredLive,
+    provider: deliveryResult.provider,
+    previewUrl: deliveryResult.previewUrl || null,
+    gatewayError: deliveryResult.error || null,
+    // Only send fallback otpCode if live gateway wasn't configured or failed, so user is never locked out
+    otpCode: deliveryResult.deliveredLive ? null : otp,
     existingProfile: existingUser
       ? {
           username: existingUser.username,
@@ -284,7 +483,6 @@ app.post('/api/auth/verify-otp', (req, res) => {
     return res.status(400).json({ error: 'Invalid 6-digit OTP code. Please check and try again.' });
   }
 
-  // OTP verified! Clear it from store
   otpStore.delete(parsed.normalized);
 
   let user = db.users.find(
@@ -396,7 +594,6 @@ app.post('/api/profile', (req, res) => {
   res.json({ user: enriched.find((u) => u.id === userId) });
 });
 
-// Get all users and conversation summaries for a user
 app.get('/api/users', (req, res) => {
   const { userId } = req.query;
   res.json({
@@ -405,14 +602,12 @@ app.get('/api/users', (req, res) => {
   });
 });
 
-// Get visible messages between two users for userA
 app.get('/api/messages/:userA/:userB', (req, res) => {
   const { userA, userB } = req.params;
   const history = getVisibleMessagesBetween(userA, userB, userA);
   res.json({ messages: history });
 });
 
-// Clear conversation between two users
 app.delete('/api/messages/:userA/:userB', (req, res) => {
   const { userA, userB } = req.params;
   db.messages = db.messages.filter(
@@ -428,7 +623,6 @@ app.delete('/api/messages/:userA/:userB', (req, res) => {
   res.json({ success: true });
 });
 
-// Smart auto-replies for Maya (the optional test bot)
 const BOT_REPLIES = [
   "That's awesome! Notice how my message ticks turned blue when you opened this chat? ✓✓",
   "Try hovering over any message and clicking the trash icon (🗑️) to test 'Delete for me' vs 'Delete for everyone'!",
@@ -498,7 +692,6 @@ function triggerBotReply(botUser, humanUserId, incomingMsg) {
   }, 450);
 }
 
-// Socket.io Real-time Messaging, Delete & WebRTC Call Signaling
 io.on('connection', (socket) => {
   let currentUserId = null;
 
@@ -579,9 +772,6 @@ io.on('connection', (socket) => {
     }
   );
 
-  // ---------------------------------------------------------------------------
-  // MESSAGE DELETE: "DELETE FOR ME" OR "DELETE FOR EVERYONE"
-  // ---------------------------------------------------------------------------
   socket.on('message:delete', ({ messageId, userId, partnerId, mode }) => {
     if (!messageId || !userId || !partnerId) return;
     const msg = db.messages.find((m) => m.id === messageId);
@@ -606,7 +796,6 @@ io.on('connection', (socket) => {
         updatedMessage: msg
       });
     } else {
-      // mode === 'me'
       if (!Array.isArray(msg.deletedFor)) {
         msg.deletedFor = [];
       }
@@ -667,9 +856,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // WEBRTC VOICE & VIDEO CALL SIGNALING
-  // ---------------------------------------------------------------------------
   socket.on('call:initiate', ({ callerId, callerName, callerAvatar, receiverId, callType, offer }) => {
     if (!callerId || !receiverId) return;
 

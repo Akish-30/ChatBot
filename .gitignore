@@ -8,8 +8,9 @@ dist/
 client/dist/
 build/
 
-# Runtime local database & uploads
+# Runtime local database, gateway config & uploads
 server/data/db.json
+server/data/gateway.json
 server/data/uploads/
 
 # Environment variables

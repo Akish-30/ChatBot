@@ -2382,6 +2382,74 @@ body,
   color: var(--text-primary);
 }
 
+.live-otp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.autofill-otp-btn.webmail-link {
+  text-decoration: none;
+  background: rgba(56, 189, 248, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
+  box-shadow: none;
+}
+
+.gateway-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-glass-hover);
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  padding: 8px 12px;
+  margin-bottom: 18px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.18s ease;
+}
+
+.gateway-status-strip:hover {
+  border-color: var(--border-glass-strong);
+}
+
+.gateway-config-link {
+  margin-left: auto;
+  color: var(--accent-primary);
+  font-weight: 700;
+}
+
+.gateway-modal {
+  max-width: 460px;
+}
+
+.gateway-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gateway-modal-desc {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.gateway-save-msg {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 0.83rem;
+  font-weight: 600;
+  text-align: center;
+}
+
 @media (max-width: 860px) {
   .whatsapp-container {
     padding: 10px;
@@ -2403,5 +2471,6 @@ body,
     height: 92px;
   }
 }
+
 
 
