@@ -5,6 +5,15 @@ import {
   SearchIcon,
   SendIcon,
   EmojiIcon,
+  PaperclipIcon,
+  FileIcon,
+  DownloadIcon,
+  PhoneIcon,
+  PhoneOffIcon,
+  VideoIcon,
+  VideoOffIcon,
+  MicIcon,
+  MicOffIcon,
   InfoIcon,
   TrashIcon,
   LogoutIcon,
@@ -16,6 +25,13 @@ import {
 } from './components/Icons.jsx';
 
 const SOCKET_URL = window.location.origin;
+
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+};
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/9.x/avataaars/svg?seed=Felix&backgroundColor=b6e3f4',
@@ -85,11 +101,22 @@ function formatLastSeen(isoString) {
   return `last seen ${dateStr} at ${timeStr}`;
 }
 
+function formatFileSize(bytes) {
+  if (!bytes || bytes < 1024) return `${bytes || 0} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(2)} MB`;
+}
+
+function formatCallDuration(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
 export default function App() {
-  // Theme state
   const [theme, setTheme] = useState(() => localStorage.getItem('chatbox_theme') || 'dark');
 
-  // Active user in this browser tab (sessionStorage allows multiple tabs with different users)
   const [currentUser, setCurrentUser] = useState(() => {
     try {
       const saved = sessionStorage.getItem('chatbox_active_user');
@@ -106,15 +133,15 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // App state
+  // Chat state
   const [users, setUsers] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [selectedContactId, setSelectedContactId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
-  const [typingUsers, setTypingUsers] = useState({}); // { [userId]: true }
+  const [typingUsers, setTypingUsers] = useState({});
   const [sidebarSearch, setSidebarSearch] = useState('');
-  const [sidebarFilter, setSidebarFilter] = useState('all'); // 'all' | 'unread' | 'online'
+  const [sidebarFilter, setSidebarFilter] = useState('all');
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [showInfoDrawer, setShowInfoDrawer] = useState(false);
@@ -123,13 +150,37 @@ export default function App() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileAboutDraft, setProfileAboutDraft] = useState('');
 
+  // File & Image Upload state
+  const [pendingFile, setPendingFile] = useState(null); // { file, name, size, type, dataUrl, isImage }
+  const [isUploading, setIsUploading] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState(null);
+
+  // Voice & Video Call state
+  // callState: null | { status: 'incoming'|'calling'|'connected', callType: 'voice'|'video', partnerId, partnerName, partnerAvatar, offer }
+  const [callState, setCallState] = useState(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
+  const [callToast, setCallToast] = useState('');
+
   const socketRef = useRef(null);
   const selectedContactIdRef = useRef(selectedContactId);
   const currentUserRef = useRef(currentUser);
+  const callStateRef = useRef(callState);
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const isTypingEmittedRef = useRef(false);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // WebRTC Refs
+  const peerConnectionRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const remoteAudioRef = useRef(null);
+  const pendingCandidatesRef = useRef([]);
 
   useEffect(() => {
     selectedContactIdRef.current = selectedContactId;
@@ -140,11 +191,63 @@ export default function App() {
   }, [currentUser]);
 
   useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
+
+  useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('chatbox_theme', theme);
   }, [theme]);
 
-  // Fetch initial users list even on login page so user can see existing accounts
+  // Call duration timer
+  useEffect(() => {
+    if (callState?.status !== 'connected') {
+      setCallDuration(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setCallDuration((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [callState?.status]);
+
+  // Attach streams to video/audio elements whenever call overlay renders
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    }
+    if (remoteAudioRef.current && remoteStreamRef.current) {
+      remoteAudioRef.current.srcObject = remoteStreamRef.current;
+    }
+  }, [callState]);
+
+  const showToast = (msg) => {
+    setCallToast(msg);
+    setTimeout(() => setCallToast(''), 3500);
+  };
+
+  const cleanupCallMedia = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.onicecandidate = null;
+      peerConnectionRef.current.ontrack = null;
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+    }
+    remoteStreamRef.current = null;
+    pendingCandidatesRef.current = [];
+    setIsMuted(false);
+    setIsCameraOff(false);
+    setCallState(null);
+  };
+
+  // Fetch initial users list
   useEffect(() => {
     fetch('/api/users')
       .then((r) => r.json())
@@ -165,7 +268,6 @@ export default function App() {
 
     socket.on('connect', () => {
       socket.emit('user:online', { userId: currentUser.id });
-      // Refresh users & summaries on reconnect
       fetch(`/api/users?userId=${encodeURIComponent(currentUser.id)}`)
         .then((r) => r.json())
         .then((data) => {
@@ -194,14 +296,12 @@ export default function App() {
           if (prev.some((m) => m.id === incomingMsg.id)) return prev;
           return [...prev, { ...incomingMsg, status: 'read' }];
         });
-        // Immediately mark as read since the chat is open
         socket.emit('message:read', {
           readerId: myUser.id,
           senderId: incomingMsg.senderId
         });
       }
 
-      // Update sidebar conversation summary
       setSummaries((prev) => {
         const existing = prev[incomingMsg.senderId] || { unreadCount: 0 };
         return {
@@ -283,7 +383,71 @@ export default function App() {
       }));
     });
 
+    // -------------------------------------------------------------------------
+    // WEBRTC CALL SIGNALING LISTENERS
+    // -------------------------------------------------------------------------
+    socket.on('call:incoming', ({ callerId, callerName, callerAvatar, callType, offer }) => {
+      if (callStateRef.current) {
+        socket.emit('call:reject', { callerId, receiverId: currentUser.id });
+        return;
+      }
+      setCallState({
+        status: 'incoming',
+        callType: callType || 'voice',
+        partnerId: callerId,
+        partnerName: callerName,
+        partnerAvatar: callerAvatar,
+        offer
+      });
+    });
+
+    socket.on('call:answered', async ({ answer }) => {
+      try {
+        const pc = peerConnectionRef.current;
+        if (pc && answer) {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          for (const cand of pendingCandidatesRef.current) {
+            await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+          }
+          pendingCandidatesRef.current = [];
+        }
+        setCallState((prev) => (prev ? { ...prev, status: 'connected' } : null));
+      } catch (err) {
+        console.error('Error setting remote answer:', err);
+      }
+    });
+
+    socket.on('call:bot_accepted', () => {
+      setCallState((prev) => (prev ? { ...prev, status: 'connected' } : null));
+    });
+
+    socket.on('call:ice-candidate', async ({ candidate }) => {
+      if (!candidate) return;
+      const pc = peerConnectionRef.current;
+      if (pc && pc.remoteDescription) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      } else {
+        pendingCandidatesRef.current.push(candidate);
+      }
+    });
+
+    socket.on('call:rejected', () => {
+      showToast('Call was declined');
+      cleanupCallMedia();
+    });
+
+    socket.on('call:unavailable', ({ reason }) => {
+      showToast(reason || 'User is unavailable');
+      cleanupCallMedia();
+    });
+
+    socket.on('call:ended', () => {
+      showToast('Call ended');
+      cleanupCallMedia();
+    });
+
     return () => {
+      cleanupCallMedia();
       socket.disconnect();
       socketRef.current = null;
     };
@@ -297,6 +461,7 @@ export default function App() {
     setChatSearchQuery('');
     setReplyingTo(null);
     setShowEmojiPicker(false);
+    setPendingFile(null);
 
     fetch(`/api/messages/${encodeURIComponent(currentUser.id)}/${encodeURIComponent(selectedContactId)}`)
       .then((r) => r.json())
@@ -304,7 +469,6 @@ export default function App() {
         const loaded = data.messages || [];
         setMessages(loaded);
 
-        // Mark unread incoming messages as read
         const hasUnread = loaded.some(
           (m) => m.senderId === selectedContactId && m.receiverId === currentUser.id && m.status !== 'read'
         );
@@ -315,7 +479,6 @@ export default function App() {
           });
         }
 
-        // Clear local unread badge immediately
         setSummaries((prev) => ({
           ...prev,
           [selectedContactId]: {
@@ -327,11 +490,223 @@ export default function App() {
       .catch((err) => console.error('Failed to load messages:', err));
   }, [currentUser?.id, selectedContactId]);
 
-  // Scroll to bottom when messages change or typing indicator appears
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, typingUsers[selectedContactId]]);
 
+  // ---------------------------------------------------------------------------
+  // WEBRTC VOICE & VIDEO CALL FUNCTIONS
+  // ---------------------------------------------------------------------------
+  const getMediaStreamWithFallback = async (callType) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: callType === 'video' ? { width: 1280, height: 720 } : false
+      });
+      return stream;
+    } catch {
+      if (callType === 'video') {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  };
+
+  const createPeerConnection = (partnerId, localStream) => {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    peerConnectionRef.current = pc;
+
+    const remoteStream = new MediaStream();
+    remoteStreamRef.current = remoteStream;
+
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+    }
+
+    pc.ontrack = (event) => {
+      event.streams[0]?.getTracks().forEach((track) => {
+        remoteStream.addTrack(track);
+      });
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = remoteStream;
+      }
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        socketRef.current.emit('call:ice-candidate', {
+          targetId: partnerId,
+          candidate: event.candidate
+        });
+      }
+    };
+
+    return pc;
+  };
+
+  const handleStartCall = async (callType) => {
+    if (!currentUser || !selectedContact || !socketRef.current) return;
+    if (callState) return;
+
+    const stream = await getMediaStreamWithFallback(callType);
+    localStreamRef.current = stream;
+
+    setCallState({
+      status: 'calling',
+      callType,
+      partnerId: selectedContact.id,
+      partnerName: selectedContact.username,
+      partnerAvatar: selectedContact.avatar
+    });
+
+    try {
+      const pc = createPeerConnection(selectedContact.id, stream);
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: callType === 'video'
+      });
+      await pc.setLocalDescription(offer);
+
+      socketRef.current.emit('call:initiate', {
+        callerId: currentUser.id,
+        callerName: currentUser.username,
+        callerAvatar: currentUser.avatar,
+        receiverId: selectedContact.id,
+        callType,
+        offer
+      });
+    } catch (err) {
+      console.error('Failed to initiate call:', err);
+      showToast('Could not start call');
+      cleanupCallMedia();
+    }
+  };
+
+  const handleAcceptCall = async () => {
+    if (!callState || !socketRef.current || !currentUser) return;
+    const { partnerId, callType, offer } = callState;
+
+    const stream = await getMediaStreamWithFallback(callType);
+    localStreamRef.current = stream;
+
+    try {
+      const pc = createPeerConnection(partnerId, stream);
+      if (offer) {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        for (const cand of pendingCandidatesRef.current) {
+          await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+        }
+        pendingCandidatesRef.current = [];
+      }
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socketRef.current.emit('call:answer', {
+        callerId: partnerId,
+        receiverId: currentUser.id,
+        answer
+      });
+
+      setCallState((prev) => (prev ? { ...prev, status: 'connected' } : null));
+    } catch (err) {
+      console.error('Error accepting call:', err);
+      cleanupCallMedia();
+    }
+  };
+
+  const handleDeclineCall = () => {
+    if (!callState || !socketRef.current || !currentUser) return;
+    socketRef.current.emit('call:reject', {
+      callerId: callState.partnerId,
+      receiverId: currentUser.id
+    });
+    cleanupCallMedia();
+  };
+
+  const handleEndCall = () => {
+    if (!callState || !socketRef.current || !currentUser) return;
+    const { partnerId, callType, status } = callState;
+
+    socketRef.current.emit('call:end', {
+      targetId: partnerId
+    });
+
+    // Log call in chat if it was connected
+    if (status === 'connected') {
+      const icon = callType === 'video' ? '📹' : '📞';
+      const label = callType === 'video' ? 'Video call' : 'Voice call';
+      const logText = `${icon} ${label} (${formatCallDuration(callDuration)})`;
+      socketRef.current.emit('message:send', {
+        tempId: `temp-${Date.now()}`,
+        senderId: currentUser.id,
+        receiverId: partnerId,
+        text: logText,
+        isCallLog: true
+      });
+    }
+
+    cleanupCallMedia();
+  };
+
+  const handleToggleMute = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = isMuted;
+      });
+    }
+    setIsMuted(!isMuted);
+  };
+
+  const handleToggleCamera = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getVideoTracks().forEach((track) => {
+        track.enabled = isCameraOff;
+      });
+    }
+    setIsCameraOff(!isCameraOff);
+  };
+
+  // ---------------------------------------------------------------------------
+  // FILE & IMAGE UPLOAD HANDLERS
+  // ---------------------------------------------------------------------------
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 20 * 1024 * 1024) {
+      showToast('File size must be under 20 MB');
+      e.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPendingFile({
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        dataUrl: reader.result,
+        isImage: Boolean(file.type && file.type.startsWith('image/'))
+      });
+      inputRef.current?.focus();
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  // ---------------------------------------------------------------------------
+  // AUTH & MESSAGING HANDLERS
+  // ---------------------------------------------------------------------------
   const handleLogin = async (e, presetName = null, presetAvatar = null, presetAbout = null) => {
     if (e) e.preventDefault();
     const nameToUse = (presetName ?? usernameInput).trim();
@@ -365,7 +740,7 @@ export default function App() {
       setProfileAboutDraft(data.user.about || '');
       if (data.users) setUsers(data.users);
       if (data.summaries) setSummaries(data.summaries);
-    } catch (err) {
+    } catch {
       setLoginError('Failed to connect to server. Is the backend running?');
     } finally {
       setIsLoggingIn(false);
@@ -373,6 +748,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    cleanupCallMedia();
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
@@ -444,12 +820,44 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = (e) => {
+  const handleSendMessage = async (e) => {
     if (e) e.preventDefault();
     const text = messageInput.trim();
-    if (!text || !currentUser || !selectedContactId || !socketRef.current) return;
+    if ((!text && !pendingFile) || !currentUser || !selectedContactId || !socketRef.current || isUploading) {
+      return;
+    }
 
     emitStopTyping(selectedContactId);
+
+    let uploadedAttachment = null;
+    if (pendingFile) {
+      setIsUploading(true);
+      try {
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileName: pendingFile.name,
+            fileType: pendingFile.type,
+            fileSize: pendingFile.size,
+            dataUrl: pendingFile.dataUrl
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.attachment) {
+          showToast(data.error || 'Failed to upload file');
+          setIsUploading(false);
+          return;
+        }
+        uploadedAttachment = data.attachment;
+      } catch {
+        showToast('Error uploading file');
+        setIsUploading(false);
+        return;
+      } finally {
+        setIsUploading(false);
+      }
+    }
 
     const tempId = `temp-${Date.now()}`;
     const optimisticMsg = {
@@ -457,10 +865,11 @@ export default function App() {
       senderId: currentUser.id,
       receiverId: selectedContactId,
       text,
+      attachment: uploadedAttachment,
       replyTo: replyingTo
         ? {
             id: replyingTo.id,
-            text: replyingTo.text,
+            text: replyingTo.text || (replyingTo.attachment ? `📎 ${replyingTo.attachment.name}` : ''),
             senderName:
               replyingTo.senderId === currentUser.id
                 ? 'You'
@@ -473,6 +882,7 @@ export default function App() {
 
     setMessages((prev) => [...prev, optimisticMsg]);
     setMessageInput('');
+    setPendingFile(null);
     setReplyingTo(null);
     setShowEmojiPicker(false);
 
@@ -491,6 +901,7 @@ export default function App() {
         senderId: currentUser.id,
         receiverId: selectedContactId,
         text,
+        attachment: uploadedAttachment,
         replyTo: optimisticMsg.replyTo
       },
       (ack) => {
@@ -522,7 +933,6 @@ export default function App() {
     if (!currentUser) return [];
     const list = users.filter((u) => u.id !== currentUser.id);
 
-    // Filter by search query
     const query = sidebarSearch.trim().toLowerCase();
     const filtered = list.filter((u) => {
       const lastMsg = summaries[u.id]?.lastMessage?.text || '';
@@ -541,7 +951,6 @@ export default function App() {
       return true;
     });
 
-    // Sort by most recent message timestamp (or online status)
     return filtered.sort((a, b) => {
       const timeA = summaries[a.id]?.lastMessage?.timestamp
         ? new Date(summaries[a.id].lastMessage.timestamp).getTime()
@@ -560,14 +969,16 @@ export default function App() {
     [users, selectedContactId]
   );
 
-  // Filter messages inside open chat when chatSearchQuery is active
   const displayedMessages = useMemo(() => {
     const q = chatSearchQuery.trim().toLowerCase();
     if (!q) return messages;
-    return messages.filter((m) => m.text.toLowerCase().includes(q));
+    return messages.filter(
+      (m) =>
+        (m.text && m.text.toLowerCase().includes(q)) ||
+        (m.attachment?.name && m.attachment.name.toLowerCase().includes(q))
+    );
   }, [messages, chatSearchQuery]);
 
-  // Group displayed messages with date headers
   const messagesWithDateHeaders = useMemo(() => {
     const items = [];
     let lastDateLabel = null;
@@ -594,7 +1005,7 @@ export default function App() {
             <ChatBubbleLogo size={46} />
             <div>
               <h1>ChatBox Web</h1>
-              <p>Real-time person-to-person messaging</p>
+              <p>Real-time messaging, voice/video calls & file sharing</p>
             </div>
             <button
               type="button"
@@ -681,7 +1092,7 @@ export default function App() {
                   ))}
               </div>
               <p className="multi-tab-tip">
-                💡 <strong>Tip:</strong> Open this URL in two browser tabs and sign in with two different usernames to chat person-to-person live!
+                💡 <strong>Tip:</strong> Open this URL in two browser tabs and sign in with two different usernames to chat, share files, and call live!
               </p>
             </div>
           )}
@@ -690,17 +1101,167 @@ export default function App() {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // RENDER: MAIN WHATSAPP-STYLE CHAT INTERFACE
-  // ---------------------------------------------------------------------------
   const isContactTyping = selectedContact && typingUsers[selectedContact.id];
 
   return (
     <div className="whatsapp-app">
+      {/* Toast Notification */}
+      {callToast && <div className="call-toast">{callToast}</div>}
+
+      {/* Image Lightbox Modal */}
+      {lightboxImage && (
+        <div className="lightbox-overlay" onClick={() => setLightboxImage(null)}>
+          <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <img src={lightboxImage.url} alt={lightboxImage.name} />
+            <div className="lightbox-actions">
+              <span>{lightboxImage.name}</span>
+              <div className="lightbox-btn-group">
+                <a
+                  href={lightboxImage.url}
+                  download={lightboxImage.name}
+                  className="lightbox-btn"
+                >
+                  <DownloadIcon size={16} />
+                  <span>Download</span>
+                </a>
+                <button
+                  type="button"
+                  className="lightbox-btn close"
+                  onClick={() => setLightboxImage(null)}
+                >
+                  <CloseIcon size={16} />
+                  <span>Close</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Incoming Call Modal */}
+      {callState?.status === 'incoming' && (
+        <div className="call-modal-overlay">
+          <div className="incoming-call-card">
+            <div className="call-avatar-pulse">
+              <img src={callState.partnerAvatar} alt={callState.partnerName} />
+            </div>
+            <h3>{callState.partnerName}</h3>
+            <p className="incoming-call-subtitle">
+              Incoming {callState.callType === 'video' ? 'Video' : 'Voice'} Call...
+            </p>
+            <div className="incoming-call-actions">
+              <button
+                type="button"
+                className="call-action-btn decline"
+                onClick={handleDeclineCall}
+                title="Decline Call"
+              >
+                <PhoneOffIcon size={22} />
+                <span>Decline</span>
+              </button>
+              <button
+                type="button"
+                className="call-action-btn accept"
+                onClick={handleAcceptCall}
+                title="Accept Call"
+              >
+                {callState.callType === 'video' ? <VideoIcon size={22} /> : <PhoneIcon size={22} />}
+                <span>Accept</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Active / Outgoing Call Overlay */}
+      {(callState?.status === 'calling' || callState?.status === 'connected') && (
+        <div className="call-modal-overlay">
+          <div className="active-call-stage">
+            <audio ref={remoteAudioRef} autoPlay playsInline />
+
+            {callState.callType === 'video' ? (
+              <div className="video-stage">
+                <video
+                  ref={remoteVideoRef}
+                  className="remote-video"
+                  autoPlay
+                  playsInline
+                />
+                <div className="video-partner-Fallback">
+                  <div className="call-avatar-pulse">
+                    <img src={callState.partnerAvatar} alt={callState.partnerName} />
+                  </div>
+                  <h3>{callState.partnerName}</h3>
+                  <p>
+                    {callState.status === 'calling'
+                      ? 'Ringing...'
+                      : formatCallDuration(callDuration)}
+                  </p>
+                </div>
+
+                <div className="local-video-pip">
+                  <video
+                    ref={localVideoRef}
+                    className={`local-video ${isCameraOff ? 'hidden-video' : ''}`}
+                    autoPlay
+                    playsInline
+                    muted
+                  />
+                  {isCameraOff && <div className="camera-off-badge">Camera Off</div>}
+                </div>
+              </div>
+            ) : (
+              <div className="voice-stage">
+                <div className="call-avatar-pulse large">
+                  <img src={callState.partnerAvatar} alt={callState.partnerName} />
+                </div>
+                <h2>{callState.partnerName}</h2>
+                <span className="call-timer-badge">
+                  {callState.status === 'calling'
+                    ? 'Ringing...'
+                    : formatCallDuration(callDuration)}
+                </span>
+              </div>
+            )}
+
+            {/* Call Controls Bar */}
+            <div className="call-controls-bar">
+              <button
+                type="button"
+                className={`call-ctrl-btn ${isMuted ? 'toggled-off' : ''}`}
+                onClick={handleToggleMute}
+                title={isMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+              >
+                {isMuted ? <MicOffIcon size={20} /> : <MicIcon size={20} />}
+              </button>
+
+              {callState.callType === 'video' && (
+                <button
+                  type="button"
+                  className={`call-ctrl-btn ${isCameraOff ? 'toggled-off' : ''}`}
+                  onClick={handleToggleCamera}
+                  title={isCameraOff ? 'Turn Camera On' : 'Turn Camera Off'}
+                >
+                  {isCameraOff ? <VideoOffIcon size={20} /> : <VideoIcon size={20} />}
+                </button>
+              )}
+
+              <button
+                type="button"
+                className="call-ctrl-btn end-call"
+                onClick={handleEndCall}
+                title="End Call"
+              >
+                <PhoneOffIcon size={22} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="whatsapp-container">
         {/* ================= LEFT SIDEBAR ================= */}
         <aside className="sidebar">
-          {/* Sidebar Header */}
           <header className="sidebar-header">
             <div
               className="current-user-pill"
@@ -740,7 +1301,6 @@ export default function App() {
             </div>
           </header>
 
-          {/* Edit Profile Popover */}
           {editingProfile && (
             <form className="profile-editor" onSubmit={handleSaveProfile}>
               <div className="profile-editor-header">
@@ -762,7 +1322,6 @@ export default function App() {
             </form>
           )}
 
-          {/* Search & Filters */}
           <div className="sidebar-search-bar">
             <div className="search-input-wrap">
               <SearchIcon size={16} />
@@ -808,7 +1367,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Contacts List */}
           <div className="contact-list">
             {contacts.length === 0 ? (
               <div className="empty-contacts">
@@ -822,6 +1380,12 @@ export default function App() {
                 const isSelected = contact.id === selectedContactId;
                 const isTyping = Boolean(typingUsers[contact.id]);
                 const isLastFromMe = lastMsg?.senderId === currentUser.id;
+                const previewText = lastMsg
+                  ? lastMsg.text ||
+                    (lastMsg.attachment
+                      ? `${lastMsg.attachment.isImage ? '📷 Photo' : '📎 ' + lastMsg.attachment.name}`
+                      : '')
+                  : '';
 
                 return (
                   <div
@@ -849,7 +1413,7 @@ export default function App() {
                           ) : lastMsg ? (
                             <>
                               {isLastFromMe && <MessageStatusTicks status={lastMsg.status} />}
-                              <span className="preview-message-text">{lastMsg.text}</span>
+                              <span className="preview-message-text">{previewText}</span>
                             </>
                           ) : (
                             <span className="preview-about-text">{contact.about}</span>
@@ -871,7 +1435,6 @@ export default function App() {
         {/* ================= MAIN CHAT PANEL ================= */}
         {selectedContact ? (
           <main className="chat-panel">
-            {/* Chat Header (No voice/video caller buttons — strictly chat!) */}
             <header className="chat-header">
               <div
                 className="chat-header-contact"
@@ -890,7 +1453,11 @@ export default function App() {
                   <span className="chat-header-name">{selectedContact.username}</span>
                   <span
                     className={`chat-header-status ${
-                      isContactTyping ? 'typing-highlight' : selectedContact.online ? 'online-highlight' : ''
+                      isContactTyping
+                        ? 'typing-highlight'
+                        : selectedContact.online
+                        ? 'online-highlight'
+                        : ''
                     }`}
                   >
                     {isContactTyping
@@ -903,6 +1470,23 @@ export default function App() {
               </div>
 
               <div className="header-actions">
+                <button
+                  type="button"
+                  className="icon-btn call-btn"
+                  onClick={() => handleStartCall('voice')}
+                  title={`Voice call ${selectedContact.username}`}
+                >
+                  <PhoneIcon />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn call-btn"
+                  onClick={() => handleStartCall('video')}
+                  title={`Video call ${selectedContact.username}`}
+                >
+                  <VideoIcon />
+                </button>
+                <div className="header-divider" />
                 <button
                   type="button"
                   className={`icon-btn ${chatSearchOpen ? 'active' : ''}`}
@@ -933,7 +1517,6 @@ export default function App() {
               </div>
             </header>
 
-            {/* In-Chat Search Bar */}
             {chatSearchOpen && (
               <div className="in-chat-search">
                 <SearchIcon size={16} />
@@ -957,20 +1540,20 @@ export default function App() {
               </div>
             )}
 
-            {/* Messages Area */}
             <div className="messages-viewport">
               <div className="encryption-notice">
                 <LockIcon size={12} />
                 <span>
-                  Messages are delivered in real time between {currentUser.username} and{' '}
-                  {selectedContact.username}.
+                  Real-time messages, voice/video calls & file sharing between{' '}
+                  {currentUser.username} and {selectedContact.username}.
                 </span>
               </div>
 
               {messagesWithDateHeaders.length === 0 ? (
                 <div className="no-messages-placeholder">
                   <p>
-                    Say hello to <strong>{selectedContact.username}</strong>! 👋
+                    Say hello, share a file, or start a call with{' '}
+                    <strong>{selectedContact.username}</strong>! 👋
                   </p>
                 </div>
               ) : (
@@ -992,7 +1575,7 @@ export default function App() {
                       className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
                     >
                       <div
-                        className="message-bubble"
+                        className={`message-bubble ${msg.isCallLog ? 'call-log-bubble' : ''}`}
                         onDoubleClick={() => setReplyingTo(msg)}
                         title="Double-click to reply"
                       >
@@ -1003,8 +1586,45 @@ export default function App() {
                           </div>
                         )}
 
+                        {/* Attachment Rendering (Image or File Card) */}
+                        {msg.attachment && (
+                          <div className="message-attachment">
+                            {msg.attachment.isImage ? (
+                              <div
+                                className="image-attachment-wrap"
+                                onClick={() => setLightboxImage(msg.attachment)}
+                              >
+                                <img
+                                  src={msg.attachment.url}
+                                  alt={msg.attachment.name}
+                                  loading="lazy"
+                                />
+                              </div>
+                            ) : (
+                              <a
+                                href={msg.attachment.url}
+                                download={msg.attachment.name}
+                                className="file-attachment-card"
+                              >
+                                <div className="file-card-icon">
+                                  <FileIcon size={22} />
+                                </div>
+                                <div className="file-card-meta">
+                                  <span className="file-card-name">{msg.attachment.name}</span>
+                                  <span className="file-card-size">
+                                    {formatFileSize(msg.attachment.size)}
+                                  </span>
+                                </div>
+                                <div className="file-card-download">
+                                  <DownloadIcon size={18} />
+                                </div>
+                              </a>
+                            )}
+                          </div>
+                        )}
+
                         <div className="message-content-wrap">
-                          <span className="message-text">{msg.text}</span>
+                          {msg.text && <span className="message-text">{msg.text}</span>}
                           <span className="message-meta">
                             <span className="message-time">{formatTime(msg.timestamp)}</span>
                             {isOutgoing && <MessageStatusTicks status={msg.status} />}
@@ -1028,7 +1648,6 @@ export default function App() {
                 })
               )}
 
-              {/* Live Typing Indicator Bubble */}
               {isContactTyping && (
                 <div className="message-row incoming">
                   <div className="message-bubble typing-bubble">
@@ -1042,6 +1661,39 @@ export default function App() {
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Pending File / Image Attachment Preview Banner */}
+            {pendingFile && (
+              <div className="attachment-preview-banner">
+                <div className="attachment-preview-left">
+                  {pendingFile.isImage ? (
+                    <img
+                      src={pendingFile.dataUrl}
+                      alt={pendingFile.name}
+                      className="attachment-thumb"
+                    />
+                  ) : (
+                    <div className="attachment-file-badge">
+                      <FileIcon size={20} />
+                    </div>
+                  )}
+                  <div className="attachment-preview-info">
+                    <span className="attachment-preview-name">{pendingFile.name}</span>
+                    <span className="attachment-preview-size">
+                      {formatFileSize(pendingFile.size)} — Ready to send
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setPendingFile(null)}
+                  title="Remove attachment"
+                >
+                  <CloseIcon size={18} />
+                </button>
+              </div>
+            )}
+
             {/* Reply Preview Banner */}
             {replyingTo && (
               <div className="reply-composer-banner">
@@ -1050,7 +1702,10 @@ export default function App() {
                     Replying to{' '}
                     {replyingTo.senderId === currentUser.id ? 'yourself' : selectedContact.username}
                   </span>
-                  <p className="reply-banner-text">{replyingTo.text}</p>
+                  <p className="reply-banner-text">
+                    {replyingTo.text ||
+                      (replyingTo.attachment ? `📎 ${replyingTo.attachment.name}` : '')}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -1062,7 +1717,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Quick Emoji Picker */}
             {showEmojiPicker && (
               <div className="emoji-picker-bar">
                 {QUICK_EMOJIS.map((emoji) => (
@@ -1093,10 +1747,29 @@ export default function App() {
               </button>
 
               <input
+                ref={fileInputRef}
+                type="file"
+                style={{ display: 'none' }}
+                onChange={handleFileSelect}
+              />
+              <button
+                type="button"
+                className={`icon-btn ${pendingFile ? 'active' : ''}`}
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach image or file"
+              >
+                <PaperclipIcon />
+              </button>
+
+              <input
                 ref={inputRef}
                 type="text"
                 className="composer-input"
-                placeholder={`Message ${selectedContact.username}...`}
+                placeholder={
+                  pendingFile
+                    ? `Add a caption for ${pendingFile.name}...`
+                    : `Message ${selectedContact.username}...`
+                }
                 value={messageInput}
                 onChange={handleInputChange}
                 autoFocus
@@ -1105,7 +1778,7 @@ export default function App() {
               <button
                 type="submit"
                 className="send-btn"
-                disabled={!messageInput.trim()}
+                disabled={(!messageInput.trim() && !pendingFile) || isUploading}
                 title="Send message"
               >
                 <SendIcon size={20} />
@@ -1113,23 +1786,22 @@ export default function App() {
             </form>
           </main>
         ) : (
-          /* Empty Welcome State when no chat is selected */
           <main className="chat-empty-state">
             <div className="empty-state-card">
               <ChatBubbleLogo size={68} />
               <h2>ChatBox Web</h2>
               <p>
-                Select any contact on the left to start chatting in real time with instant
-                online status, typing indicators, and blue read receipts.
+                Select any contact on the left to chat in real time, share images & files, or
+                launch a live peer-to-peer Voice or Video call.
               </p>
               <div className="empty-feature-badges">
-                <span className="feature-badge">🟢 Live Online Status</span>
-                <span className="feature-badge">💬 Typing Indicators</span>
+                <span className="feature-badge">📞 Voice & Video Calls</span>
+                <span className="feature-badge">📎 Image & File Sharing</span>
                 <span className="feature-badge">✓✓ Blue Read Ticks</span>
               </div>
               <div className="empty-encryption-footer">
                 <LockIcon size={13} />
-                <span>Real-time WebSocket messaging</span>
+                <span>Real-time WebSocket & WebRTC messaging</span>
               </div>
             </div>
           </main>
@@ -1163,11 +1835,31 @@ export default function App() {
                     ? 'Online now'
                     : formatLastSeen(selectedContact.lastSeen)}
                 </p>
+                <div className="info-quick-call-row">
+                  <button
+                    type="button"
+                    className="info-call-pill"
+                    onClick={() => handleStartCall('voice')}
+                  >
+                    <PhoneIcon size={16} />
+                    <span>Voice Call</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="info-call-pill"
+                    onClick={() => handleStartCall('video')}
+                  >
+                    <VideoIcon size={16} />
+                    <span>Video Call</span>
+                  </button>
+                </div>
               </div>
 
               <div className="info-section">
                 <span className="info-label">About</span>
-                <p className="info-value">{selectedContact.about || 'Hey there! I am using ChatBox.'}</p>
+                <p className="info-value">
+                  {selectedContact.about || 'Hey there! I am using ChatBox.'}
+                </p>
               </div>
 
               <div className="info-section">

@@ -12,10 +12,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
+  maxHttpBufferSize: 25 * 1024 * 1024, // 25 MB for attachments
   cors: {
     origin: '*',
     methods: ['GET', 'POST', 'DELETE']
@@ -23,11 +25,18 @@ const io = new Server(server, {
 });
 
 const DATA_DIR = path.join(__dirname, 'data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 const DEFAULT_USERS = [
   {
@@ -50,7 +59,7 @@ const DEFAULT_USERS = [
     id: 'user-bot',
     username: 'Maya (Instant Reply)',
     avatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Maya&backgroundColor=c0aede',
-    about: 'Always online! Message me to test blue ticks & typing indicators 💬',
+    about: 'Always online! Message or call me to test features 💬',
     lastSeen: new Date().toISOString(),
     isBot: true,
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString()
@@ -135,6 +144,46 @@ function getConversationSummaries(userId) {
 
 // REST Endpoints
 
+// File & Image Upload Endpoint
+app.post('/api/upload', (req, res) => {
+  try {
+    const { fileName, fileType, fileSize, dataUrl } = req.body;
+    if (!dataUrl || !fileName) {
+      return res.status(400).json({ error: 'Invalid file upload payload' });
+    }
+
+    const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ error: 'Malformed base64 data URL' });
+    }
+
+    const buffer = Buffer.from(matches[2], 'base64');
+    const safeExt = path.extname(fileName).replace(/[^a-zA-Z0-9.]/g, '') || '';
+    const baseName = path
+      .basename(fileName, path.extname(fileName))
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 40);
+    const storedFileName = `${Date.now()}-${crypto.randomUUID().slice(0, 6)}-${baseName}${safeExt}`;
+    const filePath = path.join(UPLOADS_DIR, storedFileName);
+
+    fs.writeFileSync(filePath, buffer);
+
+    const isImage = Boolean(fileType && fileType.startsWith('image/'));
+    return res.json({
+      attachment: {
+        url: `/uploads/${storedFileName}`,
+        name: fileName,
+        type: fileType || 'application/octet-stream',
+        size: fileSize || buffer.length,
+        isImage
+      }
+    });
+  } catch (err) {
+    console.error('File upload failed:', err);
+    return res.status(500).json({ error: 'Failed to save uploaded file' });
+  }
+});
+
 // Login or register by username
 app.post('/api/login', (req, res) => {
   const { username, avatar, about } = req.body;
@@ -160,14 +209,13 @@ app.post('/api/login', (req, res) => {
     };
     db.users.push(user);
 
-    // Seed a friendly welcome message from Maya so new users immediately see how chats look
     const bot = db.users.find((u) => u.isBot);
     if (bot) {
       db.messages.push({
         id: `msg-${crypto.randomUUID()}`,
         senderId: bot.id,
         receiverId: user.id,
-        text: `Hey ${user.username}! 👋 Welcome to ChatBox. You can chat with me here to test typing indicators and blue read ticks, or open another browser tab and sign in with a second username to chat person-to-person in real time!`,
+        text: `Hey ${user.username}! 👋 Welcome to ChatBox. You can send messages, share images/files (📎), or start a live Voice/Video call (📞 / 📹) with any online user!`,
         timestamp: new Date().toISOString(),
         status: 'delivered'
       });
@@ -244,14 +292,13 @@ app.delete('/api/messages/:userA/:userB', (req, res) => {
 // Smart auto-replies for Maya (the optional test bot)
 const BOT_REPLIES = [
   "That's awesome! Notice how my message ticks turned blue when you opened this chat? ✓✓",
-  "Everything here happens in real time over WebSockets (Socket.io)! Try opening a second browser tab with another username to chat person-to-person.",
+  "You can also attach images & files with the paperclip button (📎) or test Voice & Video calls using the top-right buttons!",
   "I'm doing great! How is your day going?",
   "Got your message loud and clear! 🚀",
-  "WhatsApp-style chatting without any bloat — fast, clean, and instant!"
+  "Everything here happens in real time over WebSockets & WebRTC!"
 ];
 
-function triggerBotReply(botUser, humanUserId, incomingText) {
-  // 1. After 600ms, mark user's message as read (blue ticks)
+function triggerBotReply(botUser, humanUserId, incomingMsg) {
   setTimeout(() => {
     const updatedIds = [];
     for (const msg of db.messages) {
@@ -269,25 +316,29 @@ function triggerBotReply(botUser, humanUserId, incomingText) {
       });
     }
 
-    // 2. Start typing indicator
     emitToUser(humanUserId, 'typing:update', {
       senderId: botUser.id,
       isTyping: true
     });
 
-    // 3. Send reply after 1.5s of typing
     setTimeout(() => {
       emitToUser(humanUserId, 'typing:update', {
         senderId: botUser.id,
         isTyping: false
       });
 
-      const lower = incomingText.toLowerCase();
       let replyText = BOT_REPLIES[Math.floor(Math.random() * BOT_REPLIES.length)];
-      if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey')) {
-        replyText = `Hey there! 👋 Great to chat with you. How can I help you test ChatBox today?`;
-      } else if (lower.includes('how are you')) {
-        replyText = `I'm running at 100% uptime and feeling great! ⚡ How about you?`;
+      if (incomingMsg.attachment) {
+        replyText = incomingMsg.attachment.isImage
+          ? `Nice picture ("${incomingMsg.attachment.name}")! 📸 Image uploads work great!`
+          : `Received your file "${incomingMsg.attachment.name}"! 📁`;
+      } else if (incomingMsg.text) {
+        const lower = incomingMsg.text.toLowerCase();
+        if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey')) {
+          replyText = `Hey there! 👋 Try sending me an image/file or starting a Voice/Video call!`;
+        } else if (lower.includes('how are you')) {
+          replyText = `I'm running at 100% uptime and feeling great! ⚡ How about you?`;
+        }
       }
 
       const recipientOnline = isUserOnline(humanUserId);
@@ -304,11 +355,11 @@ function triggerBotReply(botUser, humanUserId, incomingText) {
       saveDb(db);
 
       emitToUser(humanUserId, 'message:receive', botMsg);
-    }, 1500);
-  }, 500);
+    }, 1400);
+  }, 450);
 }
 
-// Socket.io Real-time Handling
+// Socket.io Real-time Messaging & WebRTC Call Signaling
 io.on('connection', (socket) => {
   let currentUserId = null;
 
@@ -326,7 +377,6 @@ io.on('connection', (socket) => {
       user.lastSeen = new Date().toISOString();
     }
 
-    // Upgrade any 'sent' messages addressed to this user to 'delivered'
     const senderBuckets = new Map();
     for (const msg of db.messages) {
       if (msg.receiverId === userId && msg.status === 'sent') {
@@ -352,39 +402,41 @@ io.on('connection', (socket) => {
     io.emit('users:update', getEnrichedUsers());
   });
 
-  socket.on('message:send', ({ tempId, senderId, receiverId, text, replyTo }, callback) => {
-    if (!senderId || !receiverId || !text || !text.trim()) return;
+  socket.on(
+    'message:send',
+    ({ tempId, senderId, receiverId, text, attachment, replyTo, isCallLog }, callback) => {
+      if (!senderId || !receiverId) return;
+      const cleanText = (text || '').trim();
+      if (!cleanText && !attachment) return;
 
-    const receiverOnline = isUserOnline(receiverId);
-    const newMessage = {
-      id: `msg-${crypto.randomUUID()}`,
-      senderId,
-      receiverId,
-      text: text.trim(),
-      replyTo: replyTo || null,
-      timestamp: new Date().toISOString(),
-      status: receiverOnline ? 'delivered' : 'sent'
-    };
+      const receiverOnline = isUserOnline(receiverId);
+      const newMessage = {
+        id: `msg-${crypto.randomUUID()}`,
+        senderId,
+        receiverId,
+        text: cleanText,
+        attachment: attachment || null,
+        replyTo: replyTo || null,
+        isCallLog: Boolean(isCallLog),
+        timestamp: new Date().toISOString(),
+        status: receiverOnline ? 'delivered' : 'sent'
+      };
 
-    db.messages.push(newMessage);
-    saveDb(db);
+      db.messages.push(newMessage);
+      saveDb(db);
 
-    // Acknowledge to sender
-    if (typeof callback === 'function') {
-      callback({ tempId, message: newMessage });
+      if (typeof callback === 'function') {
+        callback({ tempId, message: newMessage });
+      }
+      emitToUser(senderId, 'message:sent_sync', { tempId, message: newMessage });
+      emitToUser(receiverId, 'message:receive', newMessage);
+
+      const receiverUser = db.users.find((u) => u.id === receiverId);
+      if (receiverUser?.isBot && !isCallLog) {
+        triggerBotReply(receiverUser, senderId, newMessage);
+      }
     }
-    // Also broadcast to any other open tabs of the sender
-    emitToUser(senderId, 'message:sent_sync', { tempId, message: newMessage });
-
-    // Deliver to receiver in real time
-    emitToUser(receiverId, 'message:receive', newMessage);
-
-    // Check if receiver is the instant-reply bot
-    const receiverUser = db.users.find((u) => u.id === receiverId);
-    if (receiverUser?.isBot) {
-      triggerBotReply(receiverUser, senderId, newMessage.text);
-    }
-  });
+  );
 
   socket.on('message:read', ({ readerId, senderId }) => {
     if (!readerId || !senderId) return;
@@ -399,13 +451,11 @@ io.on('connection', (socket) => {
 
     if (updatedIds.length > 0) {
       saveDb(db);
-      // Notify the sender so their ticks turn blue immediately
       emitToUser(senderId, 'messages:status_update', {
         partnerId: readerId,
         messageIds: updatedIds,
         status: 'read'
       });
-      // Sync read state across reader's own tabs
       emitToUser(readerId, 'messages:read_sync', {
         partnerId: senderId,
         messageIds: updatedIds
@@ -427,6 +477,68 @@ io.on('connection', (socket) => {
       senderId,
       isTyping: false
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // WEBRTC VOICE & VIDEO CALL SIGNALING
+  // ---------------------------------------------------------------------------
+  socket.on('call:initiate', ({ callerId, callerName, callerAvatar, receiverId, callType, offer }) => {
+    if (!callerId || !receiverId) return;
+
+    const receiverUser = db.users.find((u) => u.id === receiverId);
+    // If calling Maya (the demo bot), simulate answering after 1.5s so single-tab users can test calls
+    if (receiverUser?.isBot) {
+      setTimeout(() => {
+        emitToUser(callerId, 'call:bot_accepted', {
+          receiverId,
+          callType
+        });
+      }, 1500);
+      return;
+    }
+
+    if (!isUserOnline(receiverId)) {
+      emitToUser(callerId, 'call:unavailable', {
+        receiverId,
+        reason: 'User is currently offline'
+      });
+      return;
+    }
+
+    emitToUser(receiverId, 'call:incoming', {
+      callerId,
+      callerName,
+      callerAvatar,
+      callType,
+      offer
+    });
+  });
+
+  socket.on('call:answer', ({ callerId, receiverId, answer }) => {
+    if (!callerId) return;
+    emitToUser(callerId, 'call:answered', {
+      receiverId,
+      answer
+    });
+  });
+
+  socket.on('call:ice-candidate', ({ targetId, candidate }) => {
+    if (!targetId || !candidate) return;
+    emitToUser(targetId, 'call:ice-candidate', {
+      candidate
+    });
+  });
+
+  socket.on('call:reject', ({ callerId, receiverId }) => {
+    if (!callerId) return;
+    emitToUser(callerId, 'call:rejected', {
+      receiverId
+    });
+  });
+
+  socket.on('call:end', ({ targetId }) => {
+    if (!targetId) return;
+    emitToUser(targetId, 'call:ended', {});
   });
 
   socket.on('disconnect', () => {
@@ -451,7 +563,11 @@ const CLIENT_DIST = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
+    if (
+      req.path.startsWith('/api') ||
+      req.path.startsWith('/socket.io') ||
+      req.path.startsWith('/uploads')
+    ) {
       return next();
     }
     res.sendFile(path.join(CLIENT_DIST, 'index.html'));
@@ -462,4 +578,3 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`ChatBox Server running on http://localhost:${PORT}`);
 });
-

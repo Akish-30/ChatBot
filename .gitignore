@@ -8,8 +8,9 @@ dist/
 client/dist/
 build/
 
-# Runtime local database
+# Runtime local database & uploads
 server/data/db.json
+server/data/uploads/
 
 # Environment variables
 .env
