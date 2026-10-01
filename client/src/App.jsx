@@ -1489,6 +1489,37 @@ export default function App() {
 
           {/* RIGHT AUTHENTICATION PANEL */}
           <div className="premium-auth-panel">
+            {/* Mobile-Only Brand Row (shown when left hero panel is hidden on mobile/tablet) */}
+            <div className="mobile-auth-brand-row">
+              <div className="mobile-auth-brand">
+                <ChatBubbleLogo size={38} />
+                <div>
+                  <h1>ChatBox Web</h1>
+                  <p>Verified Email OTP Sign-In</p>
+                </div>
+              </div>
+              <div className="auth-utility-btns mobile-utility">
+                <button
+                  type="button"
+                  className="smtp-status-chip"
+                  onClick={() => setShowGatewayModal(true)}
+                  title="Configure Gmail SMTP for Real Email Delivery"
+                >
+                  <span className={`smtp-dot ${gatewayStatus.emailConfigured ? 'live' : 'ready'}`} />
+                  <span>{gatewayStatus.emailConfigured ? 'SMTP Live' : 'SMTP'}</span>
+                  <span>⚙️</span>
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                  title="Toggle theme"
+                >
+                  {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+                </button>
+              </div>
+            </div>
+
             {/* Top Utility Bar: Step Indicator + SMTP Settings + Theme Toggle */}
             <div className="auth-panel-topbar">
               <div className="auth-step-pills">
@@ -1503,7 +1534,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="auth-utility-btns">
+              <div className="auth-utility-btns desktop-utility">
                 <button
                   type="button"
                   className="smtp-status-chip"
@@ -2000,7 +2031,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="whatsapp-container">
+      <div className={`whatsapp-container ${selectedContact ? 'mobile-chat-open' : 'mobile-list-open'}`}>
         {/* ================= LEFT SIDEBAR ================= */}
         <aside className="sidebar">
           <header className="sidebar-header">
@@ -2070,7 +2101,7 @@ export default function App() {
               <SearchIcon size={16} />
               <input
                 type="text"
-                placeholder="Search by name, mobile, email or message"
+                placeholder="Search by name, email or message"
                 value={sidebarSearch}
                 onChange={(e) => setSidebarSearch(e.target.value)}
               />
@@ -2189,36 +2220,49 @@ export default function App() {
         {selectedContact ? (
           <main className="chat-panel">
             <header className="chat-header">
-              <div
-                className="chat-header-contact"
-                onClick={() => setShowInfoDrawer(!showInfoDrawer)}
-                title="Click for contact info"
-              >
-                <div className="avatar-wrapper">
-                  <img
-                    src={selectedContact.avatar}
-                    alt={selectedContact.username}
-                    className="avatar-img"
-                  />
-                  {selectedContact.online && <span className="online-dot" />}
-                </div>
-                <div className="chat-header-meta">
-                  <span className="chat-header-name">{selectedContact.username}</span>
-                  <span
-                    className={`chat-header-status ${
-                      isContactTyping
-                        ? 'typing-highlight'
+              <div className="chat-header-left">
+                <button
+                  type="button"
+                  className="icon-btn mobile-back-btn"
+                  onClick={() => {
+                    setSelectedContactId(null);
+                    setShowInfoDrawer(false);
+                  }}
+                  title="Back to contacts"
+                >
+                  ←
+                </button>
+                <div
+                  className="chat-header-contact"
+                  onClick={() => setShowInfoDrawer(!showInfoDrawer)}
+                  title="Click for contact info"
+                >
+                  <div className="avatar-wrapper">
+                    <img
+                      src={selectedContact.avatar}
+                      alt={selectedContact.username}
+                      className="avatar-img"
+                    />
+                    {selectedContact.online && <span className="online-dot" />}
+                  </div>
+                  <div className="chat-header-meta">
+                    <span className="chat-header-name">{selectedContact.username}</span>
+                    <span
+                      className={`chat-header-status ${
+                        isContactTyping
+                          ? 'typing-highlight'
+                          : selectedContact.online
+                          ? 'online-highlight'
+                          : ''
+                      }`}
+                    >
+                      {isContactTyping
+                        ? 'typing...'
                         : selectedContact.online
-                        ? 'online-highlight'
-                        : ''
-                    }`}
-                  >
-                    {isContactTyping
-                      ? 'typing...'
-                      : selectedContact.online
-                      ? 'online'
-                      : formatLastSeen(selectedContact.lastSeen)}
-                  </span>
+                        ? 'online'
+                        : formatLastSeen(selectedContact.lastSeen)}
+                    </span>
+                  </div>
                 </div>
               </div>
 

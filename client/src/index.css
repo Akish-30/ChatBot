@@ -774,6 +774,22 @@ body,
   z-index: 2;
 }
 
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mobile-back-btn {
+  display: none;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
 .chat-header-contact {
   display: flex;
   align-items: center;
@@ -2477,8 +2493,14 @@ body,
    ========================================================================== */
 .premium-login-page {
   position: relative;
+  height: 100dvh;
+  width: 100vw;
   overflow-y: auto;
   overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   padding: 28px 20px;
 }
 
@@ -2533,6 +2555,7 @@ body,
   width: 100%;
   max-width: 1040px;
   min-height: 620px;
+  margin: auto;
   display: grid;
   grid-template-columns: 1.02fr 1.15fr;
   background: var(--bg-glass-panel);
@@ -2542,6 +2565,38 @@ body,
   border-radius: 32px;
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 40px rgba(99, 102, 241, 0.16);
   overflow: hidden;
+}
+
+/* Mobile-Only Brand Row inside Auth Panel (hidden on desktop) */
+.mobile-auth-brand-row {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.mobile-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mobile-auth-brand h1 {
+  font-size: 1.22rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: var(--accent-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  line-height: 1.15;
+}
+
+.mobile-auth-brand p {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
 }
 
 /* Left Showcase Hero Panel */
@@ -2713,16 +2768,16 @@ body,
 
 .hero-mock-bubble.incoming {
   align-self: flex-start;
-  background: var(--bg-incoming-bubble);
-  color: var(--text-incoming);
+  background: var(--bg-bubble-in);
+  color: var(--text-primary);
   border: 1px solid var(--border-glass);
   border-bottom-left-radius: 4px;
 }
 
 .hero-mock-bubble.outgoing {
   align-self: flex-end;
-  background: var(--bg-outgoing-bubble);
-  color: var(--text-outgoing);
+  background: var(--bg-bubble-out);
+  color: var(--text-bubble-out);
   border-bottom-right-radius: 4px;
   box-shadow: 0 6px 18px rgba(99, 102, 241, 0.28);
 }
@@ -2805,8 +2860,9 @@ body,
 .auth-step-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 5px 11px;
+  padding: 6px 12px;
   border-radius: 999px;
   font-size: 0.75rem;
   font-weight: 700;
@@ -2814,6 +2870,7 @@ body,
   background: var(--bg-input-field);
   border: 1px solid var(--border-glass);
   transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .auth-step-pill.active {
@@ -2840,12 +2897,14 @@ body,
   height: 2px;
   background: var(--border-glass-strong);
   border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .auth-utility-btns {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .smtp-status-chip {
@@ -2861,6 +2920,7 @@ body,
   font-weight: 600;
   cursor: pointer;
   transition: all 0.18s ease;
+  white-space: nowrap;
 }
 
 .smtp-status-chip:hover {
@@ -3000,6 +3060,14 @@ body,
   font-size: 0.84rem;
   color: var(--text-primary);
   margin-top: 2px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.otp-target-email-chip strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Email Receiving Card */
@@ -3047,6 +3115,7 @@ body,
   text-decoration: none;
   transition: all 0.16s ease;
   white-space: nowrap;
+  text-align: center;
 }
 
 .receiving-action-btn.primary {
@@ -3084,6 +3153,7 @@ body,
   gap: 10px;
   max-width: 390px;
   margin: 0 auto;
+  width: 100%;
 }
 
 .otp-digit-box {
@@ -3112,21 +3182,331 @@ body,
   background: rgba(56, 189, 248, 0.08);
 }
 
+/* ==========================================================================
+   RESPONSIVE & MOBILE ALIGNMENT (TABLET <= 900px, MOBILE <= 768px, SMALL <= 520px)
+   ========================================================================== */
 @media (max-width: 900px) {
+  .premium-login-page {
+    padding: 18px 14px;
+  }
+
   .premium-login-shell {
     grid-template-columns: 1fr;
-    max-width: 520px;
+    max-width: 480px;
+    min-height: 0;
+    border-radius: 26px;
   }
+
   .premium-hero-panel {
     display: none;
   }
-  .premium-auth-panel {
-    padding: 26px 22px;
+
+  .mobile-auth-brand-row {
+    display: flex;
   }
+
+  .desktop-utility {
+    display: none;
+  }
+
+  .auth-panel-topbar {
+    justify-content: center;
+    padding-bottom: 12px;
+  }
+
+  .auth-step-pills {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 8px;
+  }
+
+  .auth-step-pill {
+    width: 100%;
+    padding: 7px 10px;
+  }
+
+  .premium-auth-panel {
+    padding: 24px 22px;
+    gap: 16px;
+  }
+
   .form-row-two-col {
     grid-template-columns: 1fr;
+    gap: 14px;
   }
 }
+
+/* Full Single-Pane Mobile Chat + Clean Mobile Alignment (<= 768px) */
+@media (max-width: 768px) {
+  .whatsapp-app {
+    height: 100dvh;
+    width: 100vw;
+    overflow: hidden;
+  }
+
+  .whatsapp-container {
+    padding: 0;
+    gap: 0;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+  }
+
+  /* Show ONLY Contact List when no contact is open */
+  .whatsapp-container.mobile-list-open .sidebar {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: 100%;
+    border-radius: 0;
+    border: none;
+  }
+
+  .whatsapp-container.mobile-list-open .chat-panel,
+  .whatsapp-container.mobile-list-open .chat-empty-state {
+    display: none !important;
+  }
+
+  /* Show ONLY Active Chat Panel when a contact is selected */
+  .whatsapp-container.mobile-chat-open .sidebar {
+    display: none !important;
+  }
+
+  .whatsapp-container.mobile-chat-open .chat-panel {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: 100%;
+    border-radius: 0;
+    border: none;
+  }
+
+  .mobile-back-btn {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+
+  .chat-header {
+    height: 62px;
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .chat-header-left {
+    gap: 6px;
+  }
+
+  .chat-header-contact {
+    gap: 9px;
+    padding: 2px 4px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .chat-header .avatar-wrapper {
+    width: 38px;
+    height: 38px;
+  }
+
+  .chat-header-name {
+    font-size: 0.93rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chat-header-status {
+    font-size: 0.72rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chat-header .header-actions {
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .chat-header .icon-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+  }
+
+  .header-divider {
+    display: none;
+  }
+
+  .messages-viewport {
+    padding: 14px 12px 10px 12px;
+  }
+
+  .encryption-notice {
+    max-width: 96%;
+    font-size: 0.72rem;
+    padding: 6px 12px;
+  }
+
+  .message-bubble {
+    max-width: 82%;
+    padding: 9px 12px 7px 12px;
+  }
+
+  .chat-composer {
+    margin: 0 10px 10px 10px;
+    min-height: 50px;
+    padding: 6px 8px;
+    gap: 6px;
+    border-radius: 16px;
+  }
+
+  .composer-input {
+    font-size: 0.9rem;
+    min-width: 0;
+  }
+
+  .send-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+  }
+
+  .reply-composer-banner,
+  .emoji-picker-bar,
+  .attachment-preview-banner {
+    margin: 0 10px 6px 10px;
+  }
+
+  .info-drawer {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    z-index: 80;
+  }
+
+  .live-msg-notification {
+    top: 12px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+  }
+}
+
+/* Compact Mobile Screens (<= 520px) */
+@media (max-width: 520px) {
+  .premium-login-page {
+    padding: 12px 10px;
+  }
+
+  .premium-login-shell {
+    border-radius: 22px;
+  }
+
+  .premium-auth-panel {
+    padding: 18px 16px;
+    gap: 14px;
+  }
+
+  .auth-phase-header h2 {
+    font-size: 1.28rem;
+  }
+
+  .auth-phase-header p {
+    font-size: 0.8rem;
+  }
+
+  /* 4x2 Avatar Grid on mobile so avatars are well-sized and aligned */
+  .avatar-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    max-width: 260px;
+    margin: 0 auto;
+  }
+
+  .login-form {
+    gap: 14px;
+  }
+
+  /* Stack Live OTP Banner neatly on mobile */
+  .live-otp-banner {
+    top: 10px;
+    width: 94%;
+    padding: 12px 14px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    border-radius: 16px;
+  }
+
+  .live-otp-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .autofill-otp-btn {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* Stack Email Receiving Card neatly on mobile */
+  .email-receiving-card {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+    padding: 12px 14px;
+    gap: 10px;
+  }
+
+  .email-receiving-actions {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .receiving-action-btn {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 14px;
+  }
+
+  /* Responsive 6-Box OTP Row on compact mobile */
+  .otp-boxes-row {
+    gap: 6px;
+    max-width: 100%;
+  }
+
+  .otp-digit-box {
+    height: 48px;
+    font-size: 1.25rem !important;
+    border-radius: 12px !important;
+  }
+
+  .otp-footer-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: space-between;
+  }
+
+  .quick-accounts {
+    margin-top: 14px;
+    padding-top: 14px;
+  }
+}
+
 
 
 
