@@ -1,0 +1,13 @@
+{
+  "name": "chatbox-whatsapp-clone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time person-to-person WhatsApp-style chat application",
+  "scripts": {
+    "dev:server": "npm --prefix server start",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix server install && npm --prefix client install && npm --prefix client run build",
+    "start": "npm --prefix server start",
+    "install:all": "npm --prefix server install && npm --prefix client install"
+  }
+}
