@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,7 +18,7 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  maxHttpBufferSize: 25 * 1024 * 1024, // 25 MB for attachments
+  maxHttpBufferSize: 25 * 1024 * 1024,
   cors: {
     origin: '*',
     methods: ['GET', 'POST', 'DELETE']
@@ -35,13 +36,14 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// Serve uploaded files statically
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 const DEFAULT_USERS = [
   {
     id: 'user-alex',
     username: 'Alex Rivera',
+    identifier: 'alex@chatbox.app',
+    contactType: 'email',
     avatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Alex&backgroundColor=b6e3f4',
     about: 'Building cool things on the web 🚀',
     lastSeen: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
@@ -50,6 +52,8 @@ const DEFAULT_USERS = [
   {
     id: 'user-priya',
     username: 'Priya Sharma',
+    identifier: '+91 9876543210',
+    contactType: 'phone',
     avatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Priya&backgroundColor=ffdfbf',
     about: 'Coffee first, messages second ☕',
     lastSeen: new Date(Date.now() - 1000 * 60 * 42).toISOString(),
@@ -58,6 +62,8 @@ const DEFAULT_USERS = [
   {
     id: 'user-bot',
     username: 'Maya (Instant Reply)',
+    identifier: 'maya@chatbox.app',
+    contactType: 'email',
     avatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Maya&backgroundColor=c0aede',
     about: 'Always online! Message or call me to test features 💬',
     lastSeen: new Date().toISOString(),
@@ -94,6 +100,47 @@ function saveDb(data) {
 
 const db = loadDb();
 
+// In-memory OTP store: normalizedIdentifier -> { otp, expiresAt }
+const otpStore = new Map();
+
+// Optional real SMTP transporter if EMAIL_USER & EMAIL_PASS are set in environment
+const mailTransporter =
+  process.env.EMAIL_USER && process.env.EMAIL_PASS
+    ? nodemailer.createTransport({
+        service: process.env.EMAIL_SERVICE || 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS
+        }
+      })
+    : null;
+
+function normalizeIdentifier(raw) {
+  if (!raw) return { valid: false };
+  const trimmed = String(raw).trim();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (emailRegex.test(trimmed)) {
+    return {
+      valid: true,
+      type: 'email',
+      normalized: trimmed.toLowerCase(),
+      display: trimmed.toLowerCase()
+    };
+  }
+  // Phone validation: allow +, spaces, dashes, 8 to 15 digits
+  const digitsOnly = trimmed.replace(/[\s\-()]/g, '');
+  const phoneRegex = /^\+?[0-9]{8,15}$/;
+  if (phoneRegex.test(digitsOnly)) {
+    return {
+      valid: true,
+      type: 'phone',
+      normalized: digitsOnly,
+      display: trimmed
+    };
+  }
+  return { valid: false };
+}
+
 // Map of userId -> Set of socketIds
 const onlineUserSockets = new Map();
 
@@ -120,15 +167,24 @@ function emitToUser(userId, event, payload) {
   }
 }
 
+function isDeletedForUser(msg, userId) {
+  return Array.isArray(msg.deletedFor) && msg.deletedFor.includes(userId);
+}
+
+function getVisibleMessagesBetween(userA, userB, viewerId) {
+  return db.messages.filter(
+    (m) =>
+      ((m.senderId === userA && m.receiverId === userB) ||
+        (m.senderId === userB && m.receiverId === userA)) &&
+      !isDeletedForUser(m, viewerId)
+  );
+}
+
 function getConversationSummaries(userId) {
   const summaries = {};
   for (const otherUser of db.users) {
     if (otherUser.id === userId) continue;
-    const convoMessages = db.messages.filter(
-      (m) =>
-        (m.senderId === userId && m.receiverId === otherUser.id) ||
-        (m.senderId === otherUser.id && m.receiverId === userId)
-    );
+    const convoMessages = getVisibleMessagesBetween(userId, otherUser.id, userId);
     const lastMessage = convoMessages.length > 0 ? convoMessages[convoMessages.length - 1] : null;
     const unreadCount = convoMessages.filter(
       (m) => m.senderId === otherUser.id && m.receiverId === userId && m.status !== 'read'
@@ -142,7 +198,148 @@ function getConversationSummaries(userId) {
   return summaries;
 }
 
-// REST Endpoints
+// ---------------------------------------------------------------------------
+// AUTH & OTP ENDPOINTS
+// ---------------------------------------------------------------------------
+app.post('/api/auth/send-otp', async (req, res) => {
+  const { identifier } = req.body;
+  const parsed = normalizeIdentifier(identifier);
+  if (!parsed.valid) {
+    return res.status(400).json({
+      error: 'Please enter a valid Mobile Number (e.g. +91 9876543210) or Email Address (e.g. name@example.com).'
+    });
+  }
+
+  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  otpStore.set(parsed.normalized, {
+    otp,
+    expiresAt: Date.now() + 5 * 60 * 1000
+  });
+
+  const existingUser = db.users.find(
+    (u) =>
+      u.identifier &&
+      normalizeIdentifier(u.identifier).normalized === parsed.normalized
+  );
+
+  let emailSentLive = false;
+  if (parsed.type === 'email' && mailTransporter) {
+    try {
+      await mailTransporter.sendMail({
+        from: `"ChatBox Security" <${process.env.EMAIL_USER}>`,
+        to: parsed.display,
+        subject: `Your ChatBox Verification Code: ${otp}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 460px; margin: 0 auto; padding: 24px; border-radius: 16px; background: #0f172a; color: #f8fafc;">
+            <h2 style="color: #818cf8; margin-top: 0;">ChatBox Web Verification</h2>
+            <p>Use the 6-digit OTP code below to sign in to your ChatBox account:</p>
+            <div style="font-size: 32px; font-weight: 800; letter-spacing: 6px; padding: 16px; background: #1e293b; border-radius: 12px; text-align: center; color: #38bdf8; margin: 20px 0;">
+              ${otp}
+            </div>
+            <p style="font-size: 13px; color: #94a3b8;">This code expires in 5 minutes.</p>
+          </div>
+        `
+      });
+      emailSentLive = true;
+    } catch (err) {
+      console.warn('SMTP email send failed, falling back to live notification OTP:', err.message);
+    }
+  }
+
+  console.log(`[ChatBox OTP] Sent to ${parsed.display} (${parsed.type}): ${otp}`);
+
+  return res.json({
+    success: true,
+    channel: parsed.type,
+    target: parsed.display,
+    emailSentLive,
+    // Included so the live on-screen SMS/Email notification popup can display the real OTP immediately
+    otpCode: otp,
+    existingProfile: existingUser
+      ? {
+          username: existingUser.username,
+          avatar: existingUser.avatar,
+          about: existingUser.about
+        }
+      : null
+  });
+});
+
+app.post('/api/auth/verify-otp', (req, res) => {
+  const { identifier, otp, username, avatar, about } = req.body;
+  const parsed = normalizeIdentifier(identifier);
+  if (!parsed.valid) {
+    return res.status(400).json({ error: 'Invalid mobile number or email.' });
+  }
+
+  const record = otpStore.get(parsed.normalized);
+  if (!record) {
+    return res.status(400).json({ error: 'No OTP found. Please request a new OTP.' });
+  }
+  if (Date.now() > record.expiresAt) {
+    otpStore.delete(parsed.normalized);
+    return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+  }
+  if (String(otp).trim() !== record.otp) {
+    return res.status(400).json({ error: 'Invalid 6-digit OTP code. Please check and try again.' });
+  }
+
+  // OTP verified! Clear it from store
+  otpStore.delete(parsed.normalized);
+
+  let user = db.users.find(
+    (u) =>
+      u.identifier &&
+      normalizeIdentifier(u.identifier).normalized === parsed.normalized
+  );
+
+  const cleanName = (username || '').trim();
+
+  if (!user) {
+    if (!cleanName) {
+      return res.status(400).json({ error: 'Please provide a display name for your account.' });
+    }
+    user = {
+      id: `user-${crypto.randomUUID().slice(0, 8)}`,
+      username: cleanName,
+      identifier: parsed.display,
+      contactType: parsed.type,
+      avatar:
+        avatar ||
+        `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(cleanName)}&backgroundColor=b6e3f4`,
+      about: about?.trim() || 'Hey there! I am using ChatBox.',
+      lastSeen: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    };
+    db.users.push(user);
+
+    const bot = db.users.find((u) => u.isBot);
+    if (bot) {
+      db.messages.push({
+        id: `msg-${crypto.randomUUID()}`,
+        senderId: bot.id,
+        receiverId: user.id,
+        text: `Hey ${user.username}! 👋 Your ${parsed.type === 'email' ? 'email' : 'mobile number'} (${parsed.display}) is verified. You can chat, share files, make voice/video calls, or delete messages ("Delete for me" / "Delete for everyone")!`,
+        timestamp: new Date().toISOString(),
+        status: 'delivered'
+      });
+    }
+  } else {
+    if (cleanName) user.username = cleanName;
+    if (avatar) user.avatar = avatar;
+    if (about && about.trim()) user.about = about.trim();
+    user.lastSeen = new Date().toISOString();
+  }
+
+  saveDb(db);
+  io.emit('users:update', getEnrichedUsers());
+
+  return res.json({
+    user: { ...user, online: true },
+    users: getEnrichedUsers(),
+    summaries: getConversationSummaries(user.id)
+  });
+});
 
 // File & Image Upload Endpoint
 app.post('/api/upload', (req, res) => {
@@ -184,60 +381,6 @@ app.post('/api/upload', (req, res) => {
   }
 });
 
-// Login or register by username
-app.post('/api/login', (req, res) => {
-  const { username, avatar, about } = req.body;
-  if (!username || !username.trim()) {
-    return res.status(400).json({ error: 'Username is required' });
-  }
-
-  const cleanName = username.trim();
-  let user = db.users.find(
-    (u) => u.username.toLowerCase() === cleanName.toLowerCase()
-  );
-
-  if (!user) {
-    user = {
-      id: `user-${crypto.randomUUID().slice(0, 8)}`,
-      username: cleanName,
-      avatar:
-        avatar ||
-        `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(cleanName)}&backgroundColor=b6e3f4`,
-      about: about?.trim() || 'Hey there! I am using ChatBox.',
-      lastSeen: new Date().toISOString(),
-      createdAt: new Date().toISOString()
-    };
-    db.users.push(user);
-
-    const bot = db.users.find((u) => u.isBot);
-    if (bot) {
-      db.messages.push({
-        id: `msg-${crypto.randomUUID()}`,
-        senderId: bot.id,
-        receiverId: user.id,
-        text: `Hey ${user.username}! 👋 Welcome to ChatBox. You can send messages, share images/files (📎), or start a live Voice/Video call (📞 / 📹) with any online user!`,
-        timestamp: new Date().toISOString(),
-        status: 'delivered'
-      });
-    }
-
-    saveDb(db);
-    io.emit('users:update', getEnrichedUsers());
-  } else {
-    if (avatar) user.avatar = avatar;
-    if (about && about.trim()) user.about = about.trim();
-    user.lastSeen = new Date().toISOString();
-    saveDb(db);
-    io.emit('users:update', getEnrichedUsers());
-  }
-
-  return res.json({
-    user: { ...user, online: true },
-    users: getEnrichedUsers(),
-    summaries: getConversationSummaries(user.id)
-  });
-});
-
 // Update user profile (about / avatar)
 app.post('/api/profile', (req, res) => {
   const { userId, about, avatar } = req.body;
@@ -262,14 +405,10 @@ app.get('/api/users', (req, res) => {
   });
 });
 
-// Get messages between two users
+// Get visible messages between two users for userA
 app.get('/api/messages/:userA/:userB', (req, res) => {
   const { userA, userB } = req.params;
-  const history = db.messages.filter(
-    (m) =>
-      (m.senderId === userA && m.receiverId === userB) ||
-      (m.senderId === userB && m.receiverId === userA)
-  );
+  const history = getVisibleMessagesBetween(userA, userB, userA);
   res.json({ messages: history });
 });
 
@@ -292,10 +431,10 @@ app.delete('/api/messages/:userA/:userB', (req, res) => {
 // Smart auto-replies for Maya (the optional test bot)
 const BOT_REPLIES = [
   "That's awesome! Notice how my message ticks turned blue when you opened this chat? ✓✓",
-  "You can also attach images & files with the paperclip button (📎) or test Voice & Video calls using the top-right buttons!",
+  "Try hovering over any message and clicking the trash icon (🗑️) to test 'Delete for me' vs 'Delete for everyone'!",
   "I'm doing great! How is your day going?",
   "Got your message loud and clear! 🚀",
-  "Everything here happens in real time over WebSockets & WebRTC!"
+  "Everything here happens in real time with live notifications!"
 ];
 
 function triggerBotReply(botUser, humanUserId, incomingMsg) {
@@ -335,7 +474,7 @@ function triggerBotReply(botUser, humanUserId, incomingMsg) {
       } else if (incomingMsg.text) {
         const lower = incomingMsg.text.toLowerCase();
         if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey')) {
-          replyText = `Hey there! 👋 Try sending me an image/file or starting a Voice/Video call!`;
+          replyText = `Hey there! 👋 Try sending me a message and deleting it with "Delete for everyone", or switch to another chat to see my live notification banner!`;
         } else if (lower.includes('how are you')) {
           replyText = `I'm running at 100% uptime and feeling great! ⚡ How about you?`;
         }
@@ -359,7 +498,7 @@ function triggerBotReply(botUser, humanUserId, incomingMsg) {
   }, 450);
 }
 
-// Socket.io Real-time Messaging & WebRTC Call Signaling
+// Socket.io Real-time Messaging, Delete & WebRTC Call Signaling
 io.on('connection', (socket) => {
   let currentUserId = null;
 
@@ -418,6 +557,8 @@ io.on('connection', (socket) => {
         attachment: attachment || null,
         replyTo: replyTo || null,
         isCallLog: Boolean(isCallLog),
+        deletedFor: [],
+        deletedForEveryone: false,
         timestamp: new Date().toISOString(),
         status: receiverOnline ? 'delivered' : 'sent'
       };
@@ -437,6 +578,53 @@ io.on('connection', (socket) => {
       }
     }
   );
+
+  // ---------------------------------------------------------------------------
+  // MESSAGE DELETE: "DELETE FOR ME" OR "DELETE FOR EVERYONE"
+  // ---------------------------------------------------------------------------
+  socket.on('message:delete', ({ messageId, userId, partnerId, mode }) => {
+    if (!messageId || !userId || !partnerId) return;
+    const msg = db.messages.find((m) => m.id === messageId);
+    if (!msg) return;
+
+    if (mode === 'everyone') {
+      msg.deletedForEveryone = true;
+      msg.deletedBy = userId;
+      msg.text = 'This message was deleted';
+      msg.attachment = null;
+      msg.replyTo = null;
+      saveDb(db);
+
+      emitToUser(userId, 'message:deleted_everyone', {
+        messageId,
+        partnerId,
+        updatedMessage: msg
+      });
+      emitToUser(partnerId, 'message:deleted_everyone', {
+        messageId,
+        partnerId: userId,
+        updatedMessage: msg
+      });
+    } else {
+      // mode === 'me'
+      if (!Array.isArray(msg.deletedFor)) {
+        msg.deletedFor = [];
+      }
+      if (!msg.deletedFor.includes(userId)) {
+        msg.deletedFor.push(userId);
+      }
+      saveDb(db);
+
+      const remaining = getVisibleMessagesBetween(userId, partnerId, userId);
+      const newLastMessage = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+
+      emitToUser(userId, 'message:deleted_me', {
+        messageId,
+        partnerId,
+        newLastMessage
+      });
+    }
+  });
 
   socket.on('message:read', ({ readerId, senderId }) => {
     if (!readerId || !senderId) return;
@@ -486,7 +674,6 @@ io.on('connection', (socket) => {
     if (!callerId || !receiverId) return;
 
     const receiverUser = db.users.find((u) => u.id === receiverId);
-    // If calling Maya (the demo bot), simulate answering after 1.5s so single-tab users can test calls
     if (receiverUser?.isBot) {
       setTimeout(() => {
         emitToUser(callerId, 'call:bot_accepted', {
@@ -558,7 +745,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve built React frontend in production / single-port mode
 const CLIENT_DIST = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));

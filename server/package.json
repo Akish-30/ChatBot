@@ -9,6 +9,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.1",
+    "nodemailer": "^10.0.13",
     "socket.io": "^4.8.1"
   }
 }

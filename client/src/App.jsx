@@ -50,6 +50,41 @@ const QUICK_EMOJIS = [
   '🤔', '🙌', '🥳', '👋', '💬', '⚡', '🌟', '✅'
 ];
 
+// Gentle Web Audio API chime for live notifications & OTP arrival
+function playNotificationChime() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, now); // D5
+    osc1.frequency.exponentialRampToValueAtTime(880, now + 0.14); // A5
+    gain1.gain.setValueAtTime(0.12, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.35);
+  } catch {
+    // Ignore audio context restrictions if user hasn't interacted yet
+  }
+}
+
+function triggerDesktopNotification(title, body, icon) {
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body, icon });
+    }
+  } catch {
+    // Ignore unsupported environments
+  }
+}
+
 function formatTime(isoString) {
   if (!isoString) return '';
   const date = new Date(isoString);
@@ -126,14 +161,18 @@ export default function App() {
     }
   });
 
-  // Login form state
+  // Login & OTP Verification State
+  const [loginStep, setLoginStep] = useState('credentials'); // 'credentials' | 'otp'
+  const [identifierInput, setIdentifierInput] = useState(''); // Email or Mobile number
   const [usernameInput, setUsernameInput] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_PRESETS[0]);
   const [aboutInput, setAboutInput] = useState('Hey there! I am using ChatBox.');
+  const [otpInput, setOtpInput] = useState('');
+  const [otpNotification, setOtpNotification] = useState(null); // { channel, target, otpCode, emailSentLive }
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // Chat state
+  // Chat State
   const [users, setUsers] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [selectedContactId, setSelectedContactId] = useState(null);
@@ -150,13 +189,18 @@ export default function App() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileAboutDraft, setProfileAboutDraft] = useState('');
 
-  // File & Image Upload state
-  const [pendingFile, setPendingFile] = useState(null); // { file, name, size, type, dataUrl, isImage }
+  // Live Incoming Message Notification Popup
+  const [liveNotification, setLiveNotification] = useState(null); // { id, senderId, senderName, senderAvatar, text }
+
+  // Delete Message Modal State ("Delete for me" vs "Delete for everyone")
+  const [deleteModalMsg, setDeleteModalMsg] = useState(null);
+
+  // File & Image Upload State
+  const [pendingFile, setPendingFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [lightboxImage, setLightboxImage] = useState(null);
 
-  // Voice & Video Call state
-  // callState: null | { status: 'incoming'|'calling'|'connected', callType: 'voice'|'video', partnerId, partnerName, partnerAvatar, offer }
+  // Voice & Video Call State
   const [callState, setCallState] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
@@ -166,12 +210,14 @@ export default function App() {
   const socketRef = useRef(null);
   const selectedContactIdRef = useRef(selectedContactId);
   const currentUserRef = useRef(currentUser);
+  const usersRef = useRef(users);
   const callStateRef = useRef(callState);
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const isTypingEmittedRef = useRef(false);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const liveNotifTimeoutRef = useRef(null);
 
   // WebRTC Refs
   const peerConnectionRef = useRef(null);
@@ -191,6 +237,10 @@ export default function App() {
   }, [currentUser]);
 
   useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
+
+  useEffect(() => {
     callStateRef.current = callState;
   }, [callState]);
 
@@ -198,6 +248,13 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('chatbox_theme', theme);
   }, [theme]);
+
+  // Request Browser Desktop Notification permission on login
+  useEffect(() => {
+    if (currentUser && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, [currentUser]);
 
   // Call duration timer
   useEffect(() => {
@@ -227,6 +284,36 @@ export default function App() {
   const showToast = (msg) => {
     setCallToast(msg);
     setTimeout(() => setCallToast(''), 3500);
+  };
+
+  const showLiveMessageBanner = (incomingMsg) => {
+    const sender = usersRef.current.find((u) => u.id === incomingMsg.senderId);
+    const senderName = sender?.username || 'New Message';
+    const senderAvatar =
+      sender?.avatar ||
+      `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(senderName)}`;
+    const preview =
+      incomingMsg.text ||
+      (incomingMsg.attachment
+        ? incomingMsg.attachment.isImage
+          ? `📷 Sent a photo (${incomingMsg.attachment.name})`
+          : `📎 Sent a file (${incomingMsg.attachment.name})`
+        : 'New message');
+
+    playNotificationChime();
+    triggerDesktopNotification(senderName, preview, senderAvatar);
+
+    if (liveNotifTimeoutRef.current) clearTimeout(liveNotifTimeoutRef.current);
+    setLiveNotification({
+      id: incomingMsg.id,
+      senderId: incomingMsg.senderId,
+      senderName,
+      senderAvatar,
+      text: preview
+    });
+    liveNotifTimeoutRef.current = setTimeout(() => {
+      setLiveNotification(null);
+    }, 5000);
   };
 
   const cleanupCallMedia = () => {
@@ -291,6 +378,9 @@ export default function App() {
       const myUser = currentUserRef.current;
       const isFromActiveChat = activePartnerId === incomingMsg.senderId;
 
+      // Always show live notification banner & play chime on incoming messages!
+      showLiveMessageBanner(incomingMsg);
+
       if (isFromActiveChat) {
         setMessages((prev) => {
           if (prev.some((m) => m.id === incomingMsg.id)) return prev;
@@ -330,6 +420,36 @@ export default function App() {
         [message.receiverId]: {
           ...(prev[message.receiverId] || { unreadCount: 0 }),
           lastMessage: message
+        }
+      }));
+    });
+
+    // Real-time Delete for Everyone update
+    socket.on('message:deleted_everyone', ({ messageId, partnerId, updatedMessage }) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? updatedMessage : m))
+      );
+      setSummaries((prev) => {
+        const current = prev[partnerId];
+        if (!current?.lastMessage || current.lastMessage.id !== messageId) return prev;
+        return {
+          ...prev,
+          [partnerId]: {
+            ...current,
+            lastMessage: updatedMessage
+          }
+        };
+      });
+    });
+
+    // Real-time Delete for Me update
+    socket.on('message:deleted_me', ({ messageId, partnerId, newLastMessage }) => {
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      setSummaries((prev) => ({
+        ...prev,
+        [partnerId]: {
+          ...(prev[partnerId] || { unreadCount: 0 }),
+          lastMessage: newLastMessage
         }
       }));
     });
@@ -383,14 +503,18 @@ export default function App() {
       }));
     });
 
-    // -------------------------------------------------------------------------
     // WEBRTC CALL SIGNALING LISTENERS
-    // -------------------------------------------------------------------------
     socket.on('call:incoming', ({ callerId, callerName, callerAvatar, callType, offer }) => {
       if (callStateRef.current) {
         socket.emit('call:reject', { callerId, receiverId: currentUser.id });
         return;
       }
+      playNotificationChime();
+      triggerDesktopNotification(
+        `Incoming ${callType === 'video' ? 'Video' : 'Voice'} Call`,
+        `${callerName} is calling you...`,
+        callerAvatar
+      );
       setCallState({
         status: 'incoming',
         callType: callType || 'voice',
@@ -499,11 +623,10 @@ export default function App() {
   // ---------------------------------------------------------------------------
   const getMediaStreamWithFallback = async (callType) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      return await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: callType === 'video' ? { width: 1280, height: 720 } : false
       });
-      return stream;
     } catch {
       if (callType === 'video') {
         try {
@@ -641,7 +764,6 @@ export default function App() {
       targetId: partnerId
     });
 
-    // Log call in chat if it was connected
     if (status === 'connected') {
       const icon = callType === 'video' ? '📹' : '📞';
       const label = callType === 'video' ? 'Video call' : 'Voice call';
@@ -677,7 +799,7 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
-  // FILE & IMAGE UPLOAD HANDLERS
+  // FILE & IMAGE UPLOAD HANDLER
   // ---------------------------------------------------------------------------
   const handleFileSelect = (e) => {
     const file = e.target.files?.[0];
@@ -705,13 +827,81 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
-  // AUTH & MESSAGING HANDLERS
+  // MOBILE / EMAIL OTP AUTH HANDLERS
   // ---------------------------------------------------------------------------
-  const handleLogin = async (e, presetName = null, presetAvatar = null, presetAbout = null) => {
+  const handleRequestOtp = async (
+    e,
+    presetIdentifier = null,
+    presetName = null,
+    presetAvatar = null,
+    presetAbout = null
+  ) => {
     if (e) e.preventDefault();
+    const idToUse = (presetIdentifier ?? identifierInput).trim();
     const nameToUse = (presetName ?? usernameInput).trim();
+
+    if (!idToUse) {
+      setLoginError('Please enter your Mobile Number or Email Address.');
+      return;
+    }
     if (!nameToUse) {
-      setLoginError('Please enter a username to start chatting.');
+      setLoginError('Please enter your Display Name.');
+      return;
+    }
+
+    if (presetIdentifier) setIdentifierInput(presetIdentifier);
+    if (presetName) setUsernameInput(presetName);
+    if (presetAvatar) setSelectedAvatar(presetAvatar);
+    if (presetAbout) setAboutInput(presetAbout);
+
+    setIsLoggingIn(true);
+    setLoginError('');
+
+    try {
+      const res = await fetch('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: idToUse })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.error || 'Could not send OTP');
+        setIsLoggingIn(false);
+        return;
+      }
+
+      if (data.existingProfile && !presetName) {
+        setUsernameInput(data.existingProfile.username || nameToUse);
+        setSelectedAvatar(data.existingProfile.avatar || selectedAvatar);
+        setAboutInput(data.existingProfile.about || aboutInput);
+      }
+
+      setOtpInput('');
+      setLoginStep('otp');
+      setOtpNotification({
+        channel: data.channel,
+        target: data.target,
+        otpCode: data.otpCode,
+        emailSentLive: data.emailSentLive
+      });
+
+      playNotificationChime();
+      triggerDesktopNotification(
+        `ChatBox ${data.channel === 'email' ? 'Email' : 'SMS'} OTP`,
+        `Your verification code for ${data.target} is ${data.otpCode}`,
+        selectedAvatar
+      );
+    } catch {
+      setLoginError('Failed to connect to server. Is the backend running?');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e) => {
+    if (e) e.preventDefault();
+    if (!otpInput.trim() || otpInput.trim().length !== 6) {
+      setLoginError('Please enter the 6-digit OTP code.');
       return;
     }
 
@@ -719,29 +909,33 @@ export default function App() {
     setLoginError('');
 
     try {
-      const res = await fetch('/api/login', {
+      const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: nameToUse,
-          avatar: presetAvatar || selectedAvatar,
-          about: presetAbout || aboutInput
+          identifier: identifierInput.trim(),
+          otp: otpInput.trim(),
+          username: usernameInput.trim(),
+          avatar: selectedAvatar,
+          about: aboutInput
         })
       });
       const data = await res.json();
       if (!res.ok) {
-        setLoginError(data.error || 'Could not sign in');
+        setLoginError(data.error || 'OTP verification failed');
         setIsLoggingIn(false);
         return;
       }
 
+      setOtpNotification(null);
+      setLoginStep('credentials');
       sessionStorage.setItem('chatbox_active_user', JSON.stringify(data.user));
       setCurrentUser(data.user);
       setProfileAboutDraft(data.user.about || '');
       if (data.users) setUsers(data.users);
       if (data.summaries) setSummaries(data.summaries);
     } catch {
-      setLoginError('Failed to connect to server. Is the backend running?');
+      setLoginError('Failed to verify OTP.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -757,6 +951,9 @@ export default function App() {
     setCurrentUser(null);
     setSelectedContactId(null);
     setMessages([]);
+    setLoginStep('credentials');
+    setOtpInput('');
+    setOtpNotification(null);
   };
 
   const handleSaveProfile = async (e) => {
@@ -921,6 +1118,17 @@ export default function App() {
     );
   };
 
+  const handleConfirmDeleteMessage = (mode) => {
+    if (!deleteModalMsg || !currentUser || !selectedContactId || !socketRef.current) return;
+    socketRef.current.emit('message:delete', {
+      messageId: deleteModalMsg.id,
+      userId: currentUser.id,
+      partnerId: selectedContactId,
+      mode // 'me' | 'everyone'
+    });
+    setDeleteModalMsg(null);
+  };
+
   const handleClearChat = async () => {
     if (!currentUser || !selectedContactId) return;
     await fetch(
@@ -936,9 +1144,11 @@ export default function App() {
     const query = sidebarSearch.trim().toLowerCase();
     const filtered = list.filter((u) => {
       const lastMsg = summaries[u.id]?.lastMessage?.text || '';
+      const idStr = u.identifier || '';
       const matchesQuery =
         !query ||
         u.username.toLowerCase().includes(query) ||
+        idStr.toLowerCase().includes(query) ||
         lastMsg.toLowerCase().includes(query);
 
       if (!matchesQuery) return false;
@@ -994,18 +1204,47 @@ export default function App() {
   }, [displayedMessages]);
 
   // ---------------------------------------------------------------------------
-  // RENDER: QUICK LOGIN SCREEN
+  // RENDER: MOBILE / EMAIL + OTP LOGIN SCREEN
   // ---------------------------------------------------------------------------
   if (!currentUser) {
     return (
       <div className="login-page">
-        <div className="login-top-banner" />
+        {/* Live OTP Push Notification Banner at Top of Screen */}
+        {otpNotification && (
+          <div className="live-otp-banner">
+            <div className="live-otp-icon">
+              {otpNotification.channel === 'email' ? '📧' : '💬'}
+            </div>
+            <div className="live-otp-body">
+              <div className="live-otp-header">
+                <strong>
+                  {otpNotification.channel === 'email'
+                    ? 'Email Verification OTP'
+                    : 'SMS Verification OTP'}
+                </strong>
+                <span>to {otpNotification.target}</span>
+              </div>
+              <p>
+                Your 6-digit ChatBox verification code is{' '}
+                <span className="otp-code-highlight">{otpNotification.otpCode}</span>
+              </p>
+            </div>
+            <button
+              type="button"
+              className="autofill-otp-btn"
+              onClick={() => setOtpInput(otpNotification.otpCode)}
+            >
+              Auto-Fill OTP
+            </button>
+          </div>
+        )}
+
         <div className="login-card">
           <div className="login-brand">
             <ChatBubbleLogo size={46} />
             <div>
               <h1>ChatBox Web</h1>
-              <p>Real-time messaging, voice/video calls & file sharing</p>
+              <p>Verified Mobile / Email OTP Sign-In</p>
             </div>
             <button
               type="button"
@@ -1017,71 +1256,144 @@ export default function App() {
             </button>
           </div>
 
-          <form onSubmit={handleLogin} className="login-form">
-            <div className="form-group">
-              <label>Choose Your Avatar</label>
-              <div className="avatar-grid">
-                {AVATAR_PRESETS.map((url, idx) => (
-                  <button
-                    key={url}
-                    type="button"
-                    className={`avatar-option ${selectedAvatar === url ? 'selected' : ''}`}
-                    onClick={() => setSelectedAvatar(url)}
-                    title={`Avatar ${idx + 1}`}
-                  >
-                    <img src={url} alt={`Avatar ${idx + 1}`} />
-                  </button>
-                ))}
+          {loginStep === 'credentials' ? (
+            <form onSubmit={handleRequestOtp} className="login-form">
+              <div className="form-group">
+                <label>Choose Your Avatar</label>
+                <div className="avatar-grid">
+                  {AVATAR_PRESETS.map((url, idx) => (
+                    <button
+                      key={url}
+                      type="button"
+                      className={`avatar-option ${selectedAvatar === url ? 'selected' : ''}`}
+                      onClick={() => setSelectedAvatar(url)}
+                      title={`Avatar ${idx + 1}`}
+                    >
+                      <img src={url} alt={`Avatar ${idx + 1}`} />
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className="form-group">
-              <label htmlFor="username-input">Your Display Name / Username</label>
-              <input
-                id="username-input"
-                type="text"
-                placeholder="e.g., Akish, Rahul, Sarah..."
-                value={usernameInput}
-                onChange={(e) => setUsernameInput(e.target.value)}
-                autoFocus
-                maxLength={32}
-              />
-            </div>
+              <div className="form-group">
+                <label htmlFor="identifier-input">Mobile Number or Email Address *</label>
+                <input
+                  id="identifier-input"
+                  type="text"
+                  placeholder="e.g. +91 9876543210 or akish@gmail.com"
+                  value={identifierInput}
+                  onChange={(e) => setIdentifierInput(e.target.value)}
+                  autoFocus
+                />
+              </div>
 
-            <div className="form-group">
-              <label htmlFor="about-input">About Status</label>
-              <input
-                id="about-input"
-                type="text"
-                placeholder="Hey there! I am using ChatBox."
-                value={aboutInput}
-                onChange={(e) => setAboutInput(e.target.value)}
-                maxLength={80}
-              />
-            </div>
+              <div className="form-group">
+                <label htmlFor="username-input">Your Display Name *</label>
+                <input
+                  id="username-input"
+                  type="text"
+                  placeholder="e.g. Akish, Rahul, Sarah..."
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  maxLength={32}
+                />
+              </div>
 
-            {loginError && <div className="login-error">{loginError}</div>}
+              <div className="form-group">
+                <label htmlFor="about-input">About Status</label>
+                <input
+                  id="about-input"
+                  type="text"
+                  placeholder="Hey there! I am using ChatBox."
+                  value={aboutInput}
+                  onChange={(e) => setAboutInput(e.target.value)}
+                  maxLength={80}
+                />
+              </div>
 
-            <button type="submit" className="login-submit-btn" disabled={isLoggingIn}>
-              {isLoggingIn ? 'Signing in...' : 'Start Chatting →'}
-            </button>
-          </form>
+              {loginError && <div className="login-error">{loginError}</div>}
 
-          {users.length > 0 && (
+              <button type="submit" className="login-submit-btn" disabled={isLoggingIn}>
+                {isLoggingIn ? 'Sending OTP...' : 'Send OTP Verification Code →'}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleVerifyOtp} className="login-form">
+              <div className="otp-step-info">
+                <span className="otp-badge">
+                  {otpNotification?.channel === 'email' ? '📧 Email OTP Sent' : '📱 Mobile OTP Sent'}
+                </span>
+                <p>
+                  We sent a 6-digit verification code to{' '}
+                  <strong>{otpNotification?.target || identifierInput}</strong>
+                </p>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="otp-input">Enter 6-Digit OTP Code</label>
+                <input
+                  id="otp-input"
+                  type="text"
+                  className="otp-code-input"
+                  placeholder="• • • • • •"
+                  value={otpInput}
+                  onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                  maxLength={6}
+                  autoFocus
+                />
+              </div>
+
+              {loginError && <div className="login-error">{loginError}</div>}
+
+              <button type="submit" className="login-submit-btn" disabled={isLoggingIn}>
+                {isLoggingIn ? 'Verifying OTP...' : 'Verify OTP & Start Chatting ✓'}
+              </button>
+
+              <div className="otp-footer-actions">
+                <button
+                  type="button"
+                  className="text-link-btn"
+                  onClick={() => {
+                    setLoginStep('credentials');
+                    setLoginError('');
+                  }}
+                >
+                  ← Change Mobile / Email
+                </button>
+                <button
+                  type="button"
+                  className="text-link-btn"
+                  onClick={(e) => handleRequestOtp(e)}
+                >
+                  Resend OTP
+                </button>
+              </div>
+            </form>
+          )}
+
+          {users.length > 0 && loginStep === 'credentials' && (
             <div className="quick-accounts">
               <div className="quick-accounts-title">
-                <span>Or one-click sign in with an existing profile</span>
+                <span>Or test OTP login with an existing account</span>
               </div>
               <div className="quick-account-list">
                 {users
                   .filter((u) => !u.isBot)
-                  .slice(0, 6)
+                  .slice(0, 5)
                   .map((u) => (
                     <button
                       key={u.id}
                       type="button"
                       className="quick-account-chip"
-                      onClick={(e) => handleLogin(e, u.username, u.avatar, u.about)}
+                      onClick={(e) =>
+                        handleRequestOtp(
+                          e,
+                          u.identifier || `${u.username.toLowerCase().replace(/\s+/g, '')}@chatbox.app`,
+                          u.username,
+                          u.avatar,
+                          u.about
+                        )
+                      }
                     >
                       <div className="chip-avatar-wrap">
                         <img src={u.avatar} alt={u.username} />
@@ -1091,9 +1403,6 @@ export default function App() {
                     </button>
                   ))}
               </div>
-              <p className="multi-tab-tip">
-                💡 <strong>Tip:</strong> Open this URL in two browser tabs and sign in with two different usernames to chat, share files, and call live!
-              </p>
             </div>
           )}
         </div>
@@ -1105,8 +1414,85 @@ export default function App() {
 
   return (
     <div className="whatsapp-app">
-      {/* Toast Notification */}
+      {/* Live Incoming Message Floating Notification Banner */}
+      {liveNotification && (
+        <div
+          className="live-msg-notification"
+          onClick={() => {
+            setSelectedContactId(liveNotification.senderId);
+            setLiveNotification(null);
+          }}
+          title="Click to open conversation"
+        >
+          <img
+            src={liveNotification.senderAvatar}
+            alt={liveNotification.senderName}
+            className="live-notif-avatar"
+          />
+          <div className="live-notif-content">
+            <div className="live-notif-top">
+              <span className="live-notif-name">{liveNotification.senderName}</span>
+              <span className="live-notif-tag">LIVE MESSAGE</span>
+            </div>
+            <p className="live-notif-text">{liveNotification.text}</p>
+          </div>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setLiveNotification(null);
+            }}
+          >
+            <CloseIcon size={15} />
+          </button>
+        </div>
+      )}
+
+      {/* Call / Action Toast Notification */}
       {callToast && <div className="call-toast">{callToast}</div>}
+
+      {/* Delete Message Modal ("Delete for me" or "Delete for everyone") */}
+      {deleteModalMsg && (
+        <div className="modal-backdrop" onClick={() => setDeleteModalMsg(null)}>
+          <div className="delete-modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete message?</h3>
+            <p className="delete-modal-preview">
+              {deleteModalMsg.text
+                ? `"${deleteModalMsg.text.slice(0, 70)}${deleteModalMsg.text.length > 70 ? '...' : ''}"`
+                : deleteModalMsg.attachment
+                ? `Attachment: ${deleteModalMsg.attachment.name}`
+                : 'Selected message'}
+            </p>
+
+            <div className="delete-modal-actions">
+              {deleteModalMsg.senderId === currentUser.id && !deleteModalMsg.deletedForEveryone && (
+                <button
+                  type="button"
+                  className="delete-choice-btn everyone"
+                  onClick={() => handleConfirmDeleteMessage('everyone')}
+                >
+                  Delete for everyone
+                </button>
+              )}
+              <button
+                type="button"
+                className="delete-choice-btn me"
+                onClick={() => handleConfirmDeleteMessage('me')}
+              >
+                Delete for me
+              </button>
+              <button
+                type="button"
+                className="delete-choice-btn cancel"
+                onClick={() => setDeleteModalMsg(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Image Lightbox Modal */}
       {lightboxImage && (
@@ -1224,7 +1610,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Call Controls Bar */}
             <div className="call-controls-bar">
               <button
                 type="button"
@@ -1277,7 +1662,9 @@ export default function App() {
               </div>
               <div className="current-user-meta">
                 <span className="current-user-name">{currentUser.username}</span>
-                <span className="current-user-status">Online</span>
+                <span className="current-user-status">
+                  {currentUser.identifier || 'Verified Online'}
+                </span>
               </div>
             </div>
 
@@ -1327,7 +1714,7 @@ export default function App() {
               <SearchIcon size={16} />
               <input
                 type="text"
-                placeholder="Search or start new chat"
+                placeholder="Search by name, mobile, email or message"
                 value={sidebarSearch}
                 onChange={(e) => setSidebarSearch(e.target.value)}
               />
@@ -1381,10 +1768,12 @@ export default function App() {
                 const isTyping = Boolean(typingUsers[contact.id]);
                 const isLastFromMe = lastMsg?.senderId === currentUser.id;
                 const previewText = lastMsg
-                  ? lastMsg.text ||
-                    (lastMsg.attachment
-                      ? `${lastMsg.attachment.isImage ? '📷 Photo' : '📎 ' + lastMsg.attachment.name}`
-                      : '')
+                  ? lastMsg.deletedForEveryone
+                    ? '🚫 This message was deleted'
+                    : lastMsg.text ||
+                      (lastMsg.attachment
+                        ? `${lastMsg.attachment.isImage ? '📷 Photo' : '📎 ' + lastMsg.attachment.name}`
+                        : '')
                   : '';
 
                 return (
@@ -1412,8 +1801,16 @@ export default function App() {
                             <span className="typing-text">typing...</span>
                           ) : lastMsg ? (
                             <>
-                              {isLastFromMe && <MessageStatusTicks status={lastMsg.status} />}
-                              <span className="preview-message-text">{previewText}</span>
+                              {isLastFromMe && !lastMsg.deletedForEveryone && (
+                                <MessageStatusTicks status={lastMsg.status} />
+                              )}
+                              <span
+                                className={`preview-message-text ${
+                                  lastMsg.deletedForEveryone ? 'deleted-preview' : ''
+                                }`}
+                              >
+                                {previewText}
+                              </span>
                             </>
                           ) : (
                             <span className="preview-about-text">{contact.about}</span>
@@ -1568,6 +1965,7 @@ export default function App() {
 
                   const msg = item.data;
                   const isOutgoing = msg.senderId === currentUser.id;
+                  const isDeletedEveryone = Boolean(msg.deletedForEveryone);
 
                   return (
                     <div
@@ -1575,19 +1973,20 @@ export default function App() {
                       className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
                     >
                       <div
-                        className={`message-bubble ${msg.isCallLog ? 'call-log-bubble' : ''}`}
-                        onDoubleClick={() => setReplyingTo(msg)}
-                        title="Double-click to reply"
+                        className={`message-bubble ${msg.isCallLog ? 'call-log-bubble' : ''} ${
+                          isDeletedEveryone ? 'deleted-bubble' : ''
+                        }`}
+                        onDoubleClick={() => !isDeletedEveryone && setReplyingTo(msg)}
+                        title={isDeletedEveryone ? 'Deleted message' : 'Double-click to reply'}
                       >
-                        {msg.replyTo && (
+                        {!isDeletedEveryone && msg.replyTo && (
                           <div className="quoted-reply">
                             <span className="quoted-sender">{msg.replyTo.senderName}</span>
                             <p className="quoted-text">{msg.replyTo.text}</p>
                           </div>
                         )}
 
-                        {/* Attachment Rendering (Image or File Card) */}
-                        {msg.attachment && (
+                        {!isDeletedEveryone && msg.attachment && (
                           <div className="message-attachment">
                             {msg.attachment.isImage ? (
                               <div
@@ -1624,24 +2023,45 @@ export default function App() {
                         )}
 
                         <div className="message-content-wrap">
-                          {msg.text && <span className="message-text">{msg.text}</span>}
+                          {isDeletedEveryone ? (
+                            <span className="message-text deleted-msg-italic">
+                              🚫 This message was deleted
+                            </span>
+                          ) : (
+                            msg.text && <span className="message-text">{msg.text}</span>
+                          )}
                           <span className="message-meta">
                             <span className="message-time">{formatTime(msg.timestamp)}</span>
-                            {isOutgoing && <MessageStatusTicks status={msg.status} />}
+                            {isOutgoing && !isDeletedEveryone && (
+                              <MessageStatusTicks status={msg.status} />
+                            )}
                           </span>
                         </div>
 
-                        <button
-                          type="button"
-                          className="bubble-reply-btn"
-                          onClick={() => {
-                            setReplyingTo(msg);
-                            inputRef.current?.focus();
-                          }}
-                          title="Reply"
-                        >
-                          ↩
-                        </button>
+                        {/* Hover Action Pill: Reply & Delete ("Delete for me" / "Delete for everyone") */}
+                        <div className="bubble-actions-pill">
+                          {!isDeletedEveryone && (
+                            <button
+                              type="button"
+                              className="bubble-action-btn"
+                              onClick={() => {
+                                setReplyingTo(msg);
+                                inputRef.current?.focus();
+                              }}
+                              title="Reply"
+                            >
+                              ↩
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="bubble-action-btn delete"
+                            onClick={() => setDeleteModalMsg(msg)}
+                            title="Delete message"
+                          >
+                            <TrashIcon size={13} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1661,7 +2081,6 @@ export default function App() {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Pending File / Image Attachment Preview Banner */}
             {pendingFile && (
               <div className="attachment-preview-banner">
                 <div className="attachment-preview-left">
@@ -1694,7 +2113,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Reply Preview Banner */}
             {replyingTo && (
               <div className="reply-composer-banner">
                 <div className="reply-banner-content">
@@ -1735,7 +2153,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Message Input Composer */}
             <form className="chat-composer" onSubmit={handleSendMessage}>
               <button
                 type="button"
@@ -1791,17 +2208,18 @@ export default function App() {
               <ChatBubbleLogo size={68} />
               <h2>ChatBox Web</h2>
               <p>
-                Select any contact on the left to chat in real time, share images & files, or
-                launch a live peer-to-peer Voice or Video call.
+                Select any contact on the left to chat in real time with live notifications,
+                share images & files, delete messages for everyone, or start a Voice/Video call.
               </p>
               <div className="empty-feature-badges">
+                <span className="feature-badge">🔐 Mobile / Email OTP</span>
+                <span className="feature-badge">🔔 Live Notifications</span>
+                <span className="feature-badge">🗑️ Delete for Everyone</span>
                 <span className="feature-badge">📞 Voice & Video Calls</span>
-                <span className="feature-badge">📎 Image & File Sharing</span>
-                <span className="feature-badge">✓✓ Blue Read Ticks</span>
               </div>
               <div className="empty-encryption-footer">
                 <LockIcon size={13} />
-                <span>Real-time WebSocket & WebRTC messaging</span>
+                <span>Verified account: {currentUser.identifier || currentUser.username}</span>
               </div>
             </div>
           </main>
@@ -1828,6 +2246,9 @@ export default function App() {
                   {selectedContact.online && <span className="online-dot-large" />}
                 </div>
                 <h3>{selectedContact.username}</h3>
+                {selectedContact.identifier && (
+                  <span className="info-identifier-pill">{selectedContact.identifier}</span>
+                )}
                 <p className="info-status-text">
                   {isContactTyping
                     ? 'typing...'

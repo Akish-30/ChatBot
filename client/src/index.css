@@ -1961,6 +1961,427 @@ body,
   box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5);
 }
 
+/* ==========================================================================
+   LIVE OTP NOTIFICATION BANNER & OTP VERIFICATION STEP
+   ========================================================================== */
+.live-otp-banner {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  width: 92%;
+  max-width: 520px;
+  background: var(--bg-glass-panel);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid var(--border-glass-strong);
+  border-radius: 20px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 25px rgba(99, 102, 241, 0.35);
+  animation: slideDownNotif 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideDownNotif {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -24px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.live-otp-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--accent-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.35rem;
+  flex-shrink: 0;
+  box-shadow: var(--accent-glow);
+}
+
+.live-otp-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-otp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  margin-bottom: 3px;
+}
+
+.live-otp-header strong {
+  color: var(--text-primary);
+}
+
+.live-otp-header span {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-otp-body p {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+.otp-code-highlight {
+  display: inline-block;
+  font-weight: 800;
+  font-size: 1rem;
+  letter-spacing: 0.12em;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  padding: 2px 8px;
+  border-radius: 8px;
+  margin-left: 4px;
+}
+
+.autofill-otp-btn {
+  background: var(--accent-gradient);
+  color: #ffffff;
+  border: none;
+  border-radius: 12px;
+  padding: 9px 14px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--accent-glow);
+  transition: transform 0.15s ease;
+}
+
+.autofill-otp-btn:hover {
+  transform: translateY(-1px) scale(1.03);
+}
+
+.otp-step-info {
+  background: var(--bg-glass-hover);
+  border: 1px solid var(--border-glass-strong);
+  border-radius: 16px;
+  padding: 14px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.otp-badge {
+  display: inline-block;
+  background: var(--accent-gradient);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+
+.otp-step-info p {
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.otp-step-info strong {
+  color: var(--text-primary);
+}
+
+.otp-code-input {
+  text-align: center;
+  font-size: 1.5rem !important;
+  font-weight: 800;
+  letter-spacing: 0.38em;
+  color: #38bdf8 !important;
+}
+
+.otp-footer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.text-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent-primary);
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.text-link-btn:hover {
+  text-decoration: underline;
+}
+
+.info-identifier-pill {
+  font-size: 0.78rem;
+  color: var(--accent-primary);
+  background: var(--bg-glass-hover);
+  border: 1px solid var(--border-glass);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   LIVE INCOMING MESSAGE FLOATING NOTIFICATION
+   ========================================================================== */
+.live-msg-notification {
+  position: fixed;
+  top: 22px;
+  right: 24px;
+  z-index: 1100;
+  width: 340px;
+  background: var(--bg-glass-panel);
+  backdrop-filter: blur(26px) saturate(180%);
+  -webkit-backdrop-filter: blur(26px) saturate(180%);
+  border: 1px solid var(--border-glass-strong);
+  border-radius: 20px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), 0 0 20px rgba(139, 92, 246, 0.32);
+  animation: slideInRight 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(36px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.live-notif-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.live-notif-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.live-notif-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.live-notif-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-notif-tag {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: var(--accent-gradient);
+  color: #fff;
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.live-notif-text {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   MESSAGE BUBBLE HOVER ACTIONS (REPLY + DELETE) & DELETE MODAL
+   ========================================================================== */
+.bubble-actions-pill {
+  position: absolute;
+  top: 4px;
+  right: -60px;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-glass-panel);
+  border: 1px solid var(--border-glass);
+  padding: 3px 5px;
+  border-radius: 999px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  z-index: 5;
+}
+
+.message-row.outgoing .bubble-actions-pill {
+  right: auto;
+  left: -60px;
+}
+
+.message-bubble:hover .bubble-actions-pill {
+  display: inline-flex;
+}
+
+.bubble-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.bubble-action-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
+}
+
+.bubble-action-btn.delete:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.deleted-bubble {
+  opacity: 0.78;
+}
+
+.deleted-msg-italic,
+.deleted-preview {
+  font-style: italic;
+  opacity: 0.82;
+}
+
+/* Delete Message Modal ("Delete for me" / "Delete for everyone") */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  background: rgba(4, 7, 18, 0.76);
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.delete-modal-card {
+  width: 100%;
+  max-width: 370px;
+  background: var(--bg-glass-panel);
+  border: 1px solid var(--border-glass-strong);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: var(--shadow-bento);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.delete-modal-card h3 {
+  font-size: 1.12rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.delete-modal-preview {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  background: var(--bg-glass-card);
+  border: 1px solid var(--border-glass);
+  padding: 10px 12px;
+  border-radius: 12px;
+  line-height: 1.4;
+}
+
+.delete-modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.delete-choice-btn {
+  width: 100%;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  text-align: center;
+}
+
+.delete-choice-btn.everyone {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  border: none;
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(239, 68, 68, 0.38);
+}
+
+.delete-choice-btn.everyone:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(239, 68, 68, 0.52);
+}
+
+.delete-choice-btn.me {
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #f87171;
+}
+
+.delete-choice-btn.me:hover {
+  background: rgba(239, 68, 68, 0.24);
+}
+
+.delete-choice-btn.cancel {
+  background: var(--bg-input-field);
+  border: 1px solid var(--border-glass);
+  color: var(--text-secondary);
+}
+
+.delete-choice-btn.cancel:hover {
+  color: var(--text-primary);
+}
+
 @media (max-width: 860px) {
   .whatsapp-container {
     padding: 10px;
@@ -1982,4 +2403,5 @@ body,
     height: 92px;
   }
 }
+
 
