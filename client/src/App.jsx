@@ -843,21 +843,51 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
-  // MOBILE / EMAIL OTP AUTH HANDLERS
+  // EMAIL OTP AUTH HANDLERS
   // ---------------------------------------------------------------------------
+  const otpBoxRefs = useRef([]);
+
+  const handleOtpBoxChange = (index, value) => {
+    const digit = value.replace(/[^0-9]/g, '').slice(-1);
+    const chars = otpInput.padEnd(6, ' ').split('');
+    chars[index] = digit || ' ';
+    const nextOtp = chars.join('').replace(/ /g, '');
+    setOtpInput(nextOtp);
+
+    if (digit && index < 5) {
+      otpBoxRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleOtpBoxKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !otpInput[index] && index > 0) {
+      otpBoxRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleOtpPaste = (e) => {
+    const pasted = e.clipboardData.getData('text').replace(/[^0-9]/g, '').slice(0, 6);
+    if (pasted) {
+      e.preventDefault();
+      setOtpInput(pasted);
+      const focusIdx = Math.min(pasted.length, 5);
+      otpBoxRefs.current[focusIdx]?.focus();
+    }
+  };
+
   const handleRequestOtp = async (
     e,
-    presetIdentifier = null,
+    presetEmail = null,
     presetName = null,
     presetAvatar = null,
     presetAbout = null
   ) => {
     if (e) e.preventDefault();
-    const idToUse = (presetIdentifier ?? identifierInput).trim();
+    const emailToUse = (presetEmail ?? identifierInput).trim();
     const nameToUse = (presetName ?? usernameInput).trim();
 
-    if (!idToUse) {
-      setLoginError('Please enter your Mobile Number or Email Address.');
+    if (!emailToUse) {
+      setLoginError('Please enter your Email Address.');
       return;
     }
     if (!nameToUse) {
@@ -865,7 +895,7 @@ export default function App() {
       return;
     }
 
-    if (presetIdentifier) setIdentifierInput(presetIdentifier);
+    if (presetEmail) setIdentifierInput(presetEmail);
     if (presetName) setUsernameInput(presetName);
     if (presetAvatar) setSelectedAvatar(presetAvatar);
     if (presetAbout) setAboutInput(presetAbout);
@@ -877,11 +907,11 @@ export default function App() {
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: idToUse })
+        body: JSON.stringify({ email: emailToUse })
       });
       const data = await res.json();
       if (!res.ok) {
-        setLoginError(data.error || 'Could not send OTP');
+        setLoginError(data.error || 'Could not send Email OTP');
         setIsLoggingIn(false);
         return;
       }
@@ -895,8 +925,7 @@ export default function App() {
       setOtpInput('');
       setLoginStep('otp');
       setOtpNotification({
-        channel: data.channel,
-        target: data.target,
+        email: data.email,
         otpCode: data.otpCode,
         deliveredLive: data.deliveredLive,
         provider: data.provider,
@@ -906,10 +935,10 @@ export default function App() {
 
       playNotificationChime();
       triggerDesktopNotification(
-        `ChatBox ${data.channel === 'email' ? 'Email' : 'SMS'} OTP`,
+        'ChatBox Email Verification OTP',
         data.deliveredLive
-          ? `Verification code sent to ${data.target} via ${data.provider}`
-          : `Your verification code for ${data.target} is ${data.otpCode}`,
+          ? `Verification code sent to ${data.email} via ${data.provider}`
+          : `Your 6-digit verification code for ${data.email} is ${data.otpCode}`,
         selectedAvatar
       );
     } catch {
@@ -928,33 +957,30 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           emailUser: emailUserDraft,
-          emailPass: emailPassDraft,
-          fast2smsKey: fast2smsKeyDraft
+          emailPass: emailPassDraft
         })
       });
       const data = await res.json();
       if (data.success) {
         setGatewayStatus({
-          emailConfigured: data.emailConfigured,
-          smsConfigured: data.smsConfigured
+          emailConfigured: data.emailConfigured
         });
         setEmailPassDraft('');
-        setFast2smsKeyDraft('');
-        setGatewaySaveMsg('Saved! Real OTP delivery is now active.');
+        setGatewaySaveMsg('Saved! Real Gmail SMTP OTP delivery is now active.');
         setTimeout(() => {
           setGatewaySaveMsg('');
           setShowGatewayModal(false);
         }, 1200);
       }
     } catch {
-      setGatewaySaveMsg('Failed to save gateway settings.');
+      setGatewaySaveMsg('Failed to save SMTP settings.');
     }
   };
 
   const handleVerifyOtp = async (e) => {
     if (e) e.preventDefault();
     if (!otpInput.trim() || otpInput.trim().length !== 6) {
-      setLoginError('Please enter the 6-digit OTP code.');
+      setLoginError('Please enter the complete 6-digit verification code.');
       return;
     }
 
@@ -966,7 +992,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          identifier: identifierInput.trim(),
+          email: identifierInput.trim(),
           otp: otpInput.trim(),
           username: usernameInput.trim(),
           avatar: selectedAvatar,
@@ -975,7 +1001,7 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setLoginError(data.error || 'OTP verification failed');
+        setLoginError(data.error || 'Email OTP verification failed');
         setIsLoggingIn(false);
         return;
       }
@@ -988,7 +1014,7 @@ export default function App() {
       if (data.users) setUsers(data.users);
       if (data.summaries) setSummaries(data.summaries);
     } catch {
-      setLoginError('Failed to verify OTP.');
+      setLoginError('Failed to verify Email OTP.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -1257,37 +1283,39 @@ export default function App() {
   }, [displayedMessages]);
 
   // ---------------------------------------------------------------------------
-  // RENDER: MOBILE / EMAIL + OTP LOGIN SCREEN
+  // RENDER: ULTRA-PREMIUM EMAIL + OTP VERIFICATION LOGIN SCREEN
   // ---------------------------------------------------------------------------
   if (!currentUser) {
+    const otpDigits = Array.from({ length: 6 }, (_, i) => otpInput[i] || '');
+
     return (
-      <div className="login-page">
-        {/* Live OTP Push Notification Banner at Top of Screen */}
+      <div className="login-page premium-login-page">
+        {/* Ambient Glowing Background Orbs */}
+        <div className="ambient-orb orb-indigo" />
+        <div className="ambient-orb orb-violet" />
+        <div className="ambient-orb orb-cyan" />
+
+        {/* Live Email OTP Push Notification Banner at Top of Screen */}
         {otpNotification && (
           <div className="live-otp-banner">
-            <div className="live-otp-icon">
-              {otpNotification.channel === 'email' ? '📧' : '💬'}
-            </div>
+            <div className="live-otp-icon">📧</div>
             <div className="live-otp-body">
               <div className="live-otp-header">
                 <strong>
                   {otpNotification.deliveredLive
-                    ? `Real ${otpNotification.provider} Dispatched`
-                    : otpNotification.channel === 'email'
-                    ? 'Email Verification OTP'
-                    : 'SMS Verification OTP'}
+                    ? `Live Email Dispatched (${otpNotification.provider})`
+                    : 'Email Verification OTP Ready'}
                 </strong>
                 <span>to {otpNotification.target}</span>
               </div>
               {otpNotification.deliveredLive ? (
                 <p>
-                  ✅ A dynamic 6-digit OTP has been sent directly to{' '}
-                  <strong>{otpNotification.target}</strong>! Please check your{' '}
-                  {otpNotification.channel === 'email' ? 'email inbox' : 'mobile messages'}.
+                  ✅ A 6-digit verification code has been delivered to{' '}
+                  <strong>{otpNotification.target}</strong>! Check your inbox or spam folder.
                 </p>
               ) : (
                 <p>
-                  Dynamic 6-digit OTP for <strong>{otpNotification.target}</strong>:{' '}
+                  Verification code for <strong>{otpNotification.target}</strong>:{' '}
                   <span className="otp-code-highlight">{otpNotification.otpCode}</span>
                 </p>
               )}
@@ -1300,7 +1328,7 @@ export default function App() {
                   rel="noreferrer"
                   className="autofill-otp-btn webmail-link"
                 >
-                  📬 Open Email
+                  📬 Open Email Inbox
                 </a>
               )}
               {otpNotification.otpCode && (
@@ -1309,19 +1337,19 @@ export default function App() {
                   className="autofill-otp-btn"
                   onClick={() => setOtpInput(otpNotification.otpCode)}
                 >
-                  Auto-Fill OTP
+                  ⚡ Auto-Fill Code
                 </button>
               )}
             </div>
           </div>
         )}
 
-        {/* Gateway Configuration Modal (Gmail App Password & Fast2SMS API Key) */}
+        {/* Email SMTP Gateway Configuration Modal */}
         {showGatewayModal && (
           <div className="modal-backdrop" onClick={() => setShowGatewayModal(false)}>
             <div className="delete-modal-card gateway-modal" onClick={(e) => e.stopPropagation()}>
               <div className="gateway-modal-header">
-                <h3>⚙️ Configure Real Email & SMS OTP</h3>
+                <h3>📧 Configure Direct Gmail SMTP Delivery</h3>
                 <button
                   type="button"
                   className="icon-btn"
@@ -1331,12 +1359,12 @@ export default function App() {
                 </button>
               </div>
               <p className="gateway-modal-desc">
-                Enter your Gmail App Password or Fast2SMS key below to send real OTPs directly to any mobile phone or email inbox.
+                Enter your Gmail address and a 16-digit Google App Password to send real OTP verification emails directly to any user&apos;s Gmail, Outlook, or Yahoo inbox.
               </p>
 
               <form onSubmit={handleSaveGatewayConfig} className="login-form">
                 <div className="form-group">
-                  <label>Sender Gmail Address (for Real Email OTPs)</label>
+                  <label>Sender Gmail Address</label>
                   <input
                     type="email"
                     placeholder="yourname@gmail.com"
@@ -1352,9 +1380,9 @@ export default function App() {
                       href="https://myaccount.google.com/apppasswords"
                       target="_blank"
                       rel="noreferrer"
-                      style={{ color: '#38bdf8' }}
+                      style={{ color: '#818cf8' }}
                     >
-                      Get App Password ↗
+                      Generate App Password ↗
                     </a>
                     )
                   </label>
@@ -1362,7 +1390,7 @@ export default function App() {
                     type="password"
                     placeholder={
                       gatewayStatus.emailConfigured
-                        ? '•••••••••••••••• (Already saved — enter new to update)'
+                        ? '•••••••••••••••• (Saved — enter new to update)'
                         : 'xxxx xxxx xxxx xxxx'
                     }
                     value={emailPassDraft}
@@ -1370,237 +1398,369 @@ export default function App() {
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>
-                    Fast2SMS API Key (for Real Indian +91 Mobile SMS —{' '}
-                    <a
-                      href="https://www.fast2sms.com/"
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: '#38bdf8' }}
-                    >
-                      fast2sms.com ↗
-                    </a>
-                    )
-                  </label>
-                  <input
-                    type="password"
-                    placeholder={
-                      gatewayStatus.smsConfigured
-                        ? '•••••••••••••••• (Already saved — enter new to update)'
-                        : 'Paste Fast2SMS API Authorization Key'
-                    }
-                    value={fast2smsKeyDraft}
-                    onChange={(e) => setFast2smsKeyDraft(e.target.value)}
-                  />
-                </div>
-
                 {gatewaySaveMsg && <div className="gateway-save-msg">{gatewaySaveMsg}</div>}
 
                 <button type="submit" className="login-submit-btn">
-                  Save Real OTP Gateway Settings ✓
+                  Save Email SMTP Settings ✓
                 </button>
               </form>
             </div>
           </div>
         )}
 
-        <div className="login-card">
-          <div className="login-brand">
-            <ChatBubbleLogo size={46} />
-            <div>
-              <h1>ChatBox Web</h1>
-              <p>Dynamic Mobile / Email OTP Sign-In</p>
+        {/* Ultra-Premium Split-Screen Glassmorphic Shell */}
+        <div className="premium-login-shell">
+          {/* LEFT SHOWCASE HERO PANEL */}
+          <div className="premium-hero-panel">
+            <div className="hero-top-badge">
+              <span className="hero-pulse-dot" />
+              <span>END-TO-END REALTIME WORKSPACE</span>
             </div>
-            <div className="login-theme-toggle" style={{ display: 'flex', gap: '6px' }}>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => setShowGatewayModal(true)}
-                title="Configure Real Email / SMS OTP Gateway"
-              >
-                ⚙️
-              </button>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                title="Toggle theme"
-              >
-                {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-              </button>
+
+            <div className="hero-brand-row">
+              <ChatBubbleLogo size={52} />
+              <div>
+                <h1 className="hero-title">ChatBox Web</h1>
+                <p className="hero-subtitle">Next-Gen Instant Messaging & HD Calling</p>
+              </div>
+            </div>
+
+            <p className="hero-description">
+              Connect seamlessly with real people across any device. Experience crystal-clear WebRTC voice & video calls, instant file sharing, and verified Email OTP security.
+            </p>
+
+            {/* Interactive Live Preview Mockup Card */}
+            <div className="hero-preview-card">
+              <div className="hero-preview-header">
+                <div className="hero-preview-user">
+                  <img src={selectedAvatar} alt="Preview" />
+                  <div>
+                    <strong>{usernameInput.trim() || 'Your Profile Preview'}</strong>
+                    <span>{identifierInput.trim() || 'verified.user@email.com'}</span>
+                  </div>
+                </div>
+                <span className="hero-verified-pill">✓ Email Verified</span>
+              </div>
+
+              <div className="hero-preview-messages">
+                <div className="hero-mock-bubble incoming">
+                  <span>Hey! Welcome to ChatBox Web 👋 Ready for our HD video call?</span>
+                  <small>10:42 AM</small>
+                </div>
+                <div className="hero-mock-bubble outgoing">
+                  <span>Signed in with Email OTP! Let&apos;s start chatting 🚀</span>
+                  <small>10:43 AM ✓✓</small>
+                </div>
+              </div>
+            </div>
+
+            {/* Feature Pills */}
+            <div className="hero-feature-grid">
+              <div className="hero-feature-item">
+                <span className="hero-feature-icon">🔐</span>
+                <div>
+                  <strong>Email OTP Security</strong>
+                  <small>Dynamic 6-digit verification</small>
+                </div>
+              </div>
+              <div className="hero-feature-item">
+                <span className="hero-feature-icon">📹</span>
+                <div>
+                  <strong>HD Voice & Video</strong>
+                  <small>Peer-to-peer WebRTC calling</small>
+                </div>
+              </div>
+              <div className="hero-feature-item">
+                <span className="hero-feature-icon">📎</span>
+                <div>
+                  <strong>Instant Media & Docs</strong>
+                  <small>Up to 20MB drag & drop</small>
+                </div>
+              </div>
+              <div className="hero-feature-item">
+                <span className="hero-feature-icon">⚡</span>
+                <div>
+                  <strong>Live Notifications</strong>
+                  <small>Real-time read receipts</small>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div className="gateway-status-strip" onClick={() => setShowGatewayModal(true)}>
-            <span>
-              {gatewayStatus.emailConfigured ? '🟢 Real Gmail SMTP Active' : '📧 Email OTP Ready'}
-            </span>
-            <span>•</span>
-            <span>
-              {gatewayStatus.smsConfigured ? '🟢 Real SMS Gateway Active' : '📱 Mobile OTP Ready'}
-            </span>
-            <span className="gateway-config-link">⚙️ Configure</span>
-          </div>
-
-          {loginStep === 'credentials' ? (
-            <form onSubmit={handleRequestOtp} className="login-form">
-              <div className="form-group">
-                <label>Choose Your Avatar</label>
-                <div className="avatar-grid">
-                  {AVATAR_PRESETS.map((url, idx) => (
-                    <button
-                      key={url}
-                      type="button"
-                      className={`avatar-option ${selectedAvatar === url ? 'selected' : ''}`}
-                      onClick={() => setSelectedAvatar(url)}
-                      title={`Avatar ${idx + 1}`}
-                    >
-                      <img src={url} alt={`Avatar ${idx + 1}`} />
-                    </button>
-                  ))}
+          {/* RIGHT AUTHENTICATION PANEL */}
+          <div className="premium-auth-panel">
+            {/* Top Utility Bar: Step Indicator + SMTP Settings + Theme Toggle */}
+            <div className="auth-panel-topbar">
+              <div className="auth-step-pills">
+                <div className={`auth-step-pill ${loginStep === 'credentials' ? 'active' : 'completed'}`}>
+                  <span className="step-num">{loginStep === 'credentials' ? '01' : '✓'}</span>
+                  <span>Email Profile</span>
+                </div>
+                <div className="auth-step-connector" />
+                <div className={`auth-step-pill ${loginStep === 'otp' ? 'active' : ''}`}>
+                  <span className="step-num">02</span>
+                  <span>OTP Receiving</span>
                 </div>
               </div>
 
-              <div className="form-group">
-                <label htmlFor="identifier-input">Mobile Number or Email Address *</label>
-                <input
-                  id="identifier-input"
-                  type="text"
-                  placeholder="e.g. +91 9876543210 or akish@gmail.com"
-                  value={identifierInput}
-                  onChange={(e) => setIdentifierInput(e.target.value)}
-                  autoFocus
-                />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="username-input">Your Display Name *</label>
-                <input
-                  id="username-input"
-                  type="text"
-                  placeholder="e.g. Akish, Rahul, Sarah..."
-                  value={usernameInput}
-                  onChange={(e) => setUsernameInput(e.target.value)}
-                  maxLength={32}
-                />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="about-input">About Status</label>
-                <input
-                  id="about-input"
-                  type="text"
-                  placeholder="Hey there! I am using ChatBox."
-                  value={aboutInput}
-                  onChange={(e) => setAboutInput(e.target.value)}
-                  maxLength={80}
-                />
-              </div>
-
-              {loginError && <div className="login-error">{loginError}</div>}
-
-              <button type="submit" className="login-submit-btn" disabled={isLoggingIn}>
-                {isLoggingIn ? 'Sending Dynamic OTP...' : 'Send Dynamic OTP Code →'}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleVerifyOtp} className="login-form">
-              <div className="otp-step-info">
-                <span className="otp-badge">
-                  {otpNotification?.deliveredLive
-                    ? `✅ Sent via ${otpNotification.provider}`
-                    : otpNotification?.channel === 'email'
-                    ? '📧 Dynamic Email OTP Sent'
-                    : '📱 Dynamic Mobile OTP Sent'}
-                </span>
-                <p>
-                  We sent a dynamic 6-digit verification code to{' '}
-                  <strong>{otpNotification?.target || identifierInput}</strong>
-                </p>
-                {otpNotification?.gatewayError && (
-                  <p style={{ color: '#f87171', fontSize: '0.78rem' }}>
-                    Gateway note: {otpNotification.gatewayError} (Fallback active above)
-                  </p>
-                )}
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="otp-input">Enter 6-Digit OTP Code</label>
-                <input
-                  id="otp-input"
-                  type="text"
-                  className="otp-code-input"
-                  placeholder="• • • • • •"
-                  value={otpInput}
-                  onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                  maxLength={6}
-                  autoFocus
-                />
-              </div>
-
-              {loginError && <div className="login-error">{loginError}</div>}
-
-              <button type="submit" className="login-submit-btn" disabled={isLoggingIn}>
-                {isLoggingIn ? 'Verifying OTP...' : 'Verify OTP & Start Chatting ✓'}
-              </button>
-
-              <div className="otp-footer-actions">
+              <div className="auth-utility-btns">
                 <button
                   type="button"
-                  className="text-link-btn"
-                  onClick={() => {
-                    setLoginStep('credentials');
-                    setLoginError('');
-                  }}
+                  className="smtp-status-chip"
+                  onClick={() => setShowGatewayModal(true)}
+                  title="Configure Gmail SMTP for Real Email Delivery"
                 >
-                  ← Change Mobile / Email
+                  <span className={`smtp-dot ${gatewayStatus.emailConfigured ? 'live' : 'ready'}`} />
+                  <span>{gatewayStatus.emailConfigured ? 'Gmail SMTP Live' : 'SMTP Config'}</span>
+                  <span>⚙️</span>
                 </button>
                 <button
                   type="button"
-                  className="text-link-btn"
-                  onClick={(e) => handleRequestOtp(e)}
+                  className="icon-btn"
+                  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                  title="Toggle theme"
                 >
-                  Resend New OTP
+                  {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
                 </button>
-              </div>
-            </form>
-          )}
-
-          {users.length > 0 && loginStep === 'credentials' && (
-            <div className="quick-accounts">
-              <div className="quick-accounts-title">
-                <span>Or test OTP login with an existing account</span>
-              </div>
-              <div className="quick-account-list">
-                {users
-                  .filter((u) => !u.isBot)
-                  .slice(0, 5)
-                  .map((u) => (
-                    <button
-                      key={u.id}
-                      type="button"
-                      className="quick-account-chip"
-                      onClick={(e) =>
-                        handleRequestOtp(
-                          e,
-                          u.identifier || `${u.username.toLowerCase().replace(/\s+/g, '')}@chatbox.app`,
-                          u.username,
-                          u.avatar,
-                          u.about
-                        )
-                      }
-                    >
-                      <div className="chip-avatar-wrap">
-                        <img src={u.avatar} alt={u.username} />
-                        {u.online && <span className="online-dot" />}
-                      </div>
-                      <span>{u.username}</span>
-                    </button>
-                  ))}
               </div>
             </div>
-          )}
+
+            {loginStep === 'credentials' ? (
+              <div className="auth-phase-container">
+                <div className="auth-phase-header">
+                  <h2>Sign in with Email</h2>
+                  <p>Enter your email address to receive a one-time verification code</p>
+                </div>
+
+                <form onSubmit={handleRequestOtp} className="login-form premium-form">
+                  <div className="form-group">
+                    <label>Choose Your Profile Avatar</label>
+                    <div className="avatar-grid">
+                      {AVATAR_PRESETS.map((url, idx) => (
+                        <button
+                          key={url}
+                          type="button"
+                          className={`avatar-option ${selectedAvatar === url ? 'selected' : ''}`}
+                          onClick={() => setSelectedAvatar(url)}
+                          title={`Avatar ${idx + 1}`}
+                        >
+                          <img src={url} alt={`Avatar ${idx + 1}`} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="identifier-input">Email Address *</label>
+                    <div className="premium-input-wrap">
+                      <span className="input-prefix-icon">✉️</span>
+                      <input
+                        id="identifier-input"
+                        type="email"
+                        placeholder="name@example.com"
+                        value={identifierInput}
+                        onChange={(e) => setIdentifierInput(e.target.value)}
+                        autoFocus
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-row-two-col">
+                    <div className="form-group">
+                      <label htmlFor="username-input">Display Name *</label>
+                      <div className="premium-input-wrap">
+                        <span className="input-prefix-icon">👤</span>
+                        <input
+                          id="username-input"
+                          type="text"
+                          placeholder="e.g. Akish"
+                          value={usernameInput}
+                          onChange={(e) => setUsernameInput(e.target.value)}
+                          maxLength={32}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="about-input">Status Bio</label>
+                      <div className="premium-input-wrap">
+                        <span className="input-prefix-icon">✨</span>
+                        <input
+                          id="about-input"
+                          type="text"
+                          placeholder="Available on ChatBox"
+                          value={aboutInput}
+                          onChange={(e) => setAboutInput(e.target.value)}
+                          maxLength={80}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {loginError && <div className="login-error">{loginError}</div>}
+
+                  <button type="submit" className="login-submit-btn premium-cta-btn" disabled={isLoggingIn}>
+                    {isLoggingIn ? (
+                      <span>Dispatching Verification Email...</span>
+                    ) : (
+                      <span>Send Verification Code to Email →</span>
+                    )}
+                  </button>
+                </form>
+
+                {users.length > 0 && (
+                  <div className="quick-accounts">
+                    <div className="quick-accounts-title">
+                      <span>Instant Demo Profiles (1-Click Email OTP)</span>
+                    </div>
+                    <div className="quick-account-list">
+                      {users
+                        .filter((u) => !u.isBot)
+                        .slice(0, 5)
+                        .map((u) => {
+                          const userEmail =
+                            u.identifier && u.identifier.includes('@')
+                              ? u.identifier
+                              : `${u.username.toLowerCase().replace(/[^a-z0-9]/g, '')}@chatbox.app`;
+                          return (
+                            <button
+                              key={u.id}
+                              type="button"
+                              className="quick-account-chip"
+                              onClick={(e) =>
+                                handleRequestOtp(e, userEmail, u.username, u.avatar, u.about)
+                              }
+                            >
+                              <div className="chip-avatar-wrap">
+                                <img src={u.avatar} alt={u.username} />
+                                {u.online && <span className="online-dot" />}
+                              </div>
+                              <span>{u.username}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* PHASE 2: DEDICATED EMAIL OTP RECEIVING & VERIFICATION PHASE */
+              <div className="auth-phase-container otp-receiving-phase">
+                <div className="otp-envelope-hero">
+                  <div className="otp-envelope-ring">
+                    <span className="otp-envelope-emoji">📩</span>
+                  </div>
+                  <span className="otp-live-status-pill">
+                    {otpNotification?.deliveredLive
+                      ? `✅ Delivered via ${otpNotification.provider}`
+                      : '📬 Email Verification Dispatched'}
+                  </span>
+                  <h2>Check Your Email</h2>
+                  <p>
+                    We&apos;ve sent a 6-digit verification code to
+                  </p>
+                  <div className="otp-target-email-chip">
+                    <span>✉️</span>
+                    <strong>{otpNotification?.target || identifierInput}</strong>
+                  </div>
+                </div>
+
+                {/* Live Email Inbox Receiving Card */}
+                <div className="email-receiving-card">
+                  <div className="email-receiving-info">
+                    <strong>
+                      {otpNotification?.deliveredLive
+                        ? 'Real Email Sent to Your Inbox'
+                        : 'Instant Email Inbox Preview'}
+                    </strong>
+                    <span>
+                      {otpNotification?.deliveredLive
+                        ? 'Open your email app or use quick actions below'
+                        : `Code generated via ${otpNotification?.provider || 'ChatBox Mailer'}`}
+                    </span>
+                  </div>
+                  <div className="email-receiving-actions">
+                    {otpNotification?.previewUrl && (
+                      <a
+                        href={otpNotification.previewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="receiving-action-btn primary"
+                      >
+                        📬 Open Webmail Inbox ↗
+                      </a>
+                    )}
+                    {otpNotification?.otpCode && (
+                      <button
+                        type="button"
+                        className="receiving-action-btn secondary"
+                        onClick={() => setOtpInput(otpNotification.otpCode)}
+                      >
+                        ⚡ Auto-Fill ({otpNotification.otpCode})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <form onSubmit={handleVerifyOtp} className="login-form premium-form">
+                  <div className="form-group">
+                    <label className="otp-boxes-label">Enter 6-Digit Verification Code</label>
+                    <div className="otp-boxes-row" onPaste={handleOtpPaste}>
+                      {otpDigits.map((digit, idx) => (
+                        <input
+                          key={idx}
+                          ref={(el) => {
+                            otpBoxRefs.current[idx] = el;
+                          }}
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={1}
+                          className={`otp-digit-box ${digit ? 'filled' : ''}`}
+                          value={digit}
+                          onChange={(e) => handleOtpBoxChange(idx, e.target.value)}
+                          onKeyDown={(e) => handleOtpBoxKeyDown(idx, e)}
+                          autoFocus={idx === 0}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {loginError && <div className="login-error">{loginError}</div>}
+
+                  <button
+                    type="submit"
+                    className="login-submit-btn premium-cta-btn"
+                    disabled={isLoggingIn || otpInput.replace(/[^0-9]/g, '').length < 6}
+                  >
+                    {isLoggingIn ? 'Verifying Email Code...' : 'Verify Email & Launch ChatBox ✓'}
+                  </button>
+
+                  <div className="otp-footer-actions">
+                    <button
+                      type="button"
+                      className="text-link-btn"
+                      onClick={() => {
+                        setLoginStep('credentials');
+                        setLoginError('');
+                      }}
+                    >
+                      ← Change Email Address
+                    </button>
+                    <button
+                      type="button"
+                      className="text-link-btn"
+                      onClick={(e) => handleRequestOtp(e)}
+                      disabled={isLoggingIn}
+                    >
+                      🔄 Resend Code to Email
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
